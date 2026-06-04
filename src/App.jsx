@@ -581,17 +581,7 @@ export default function App() {
   const [lastServings, setLastServings] = useState(2);
   const [error, setError] = useState(null);
   const [activeRecipe, setActiveRecipe] = useState(null);
-  const prefetchedRecipes = useRef(null);
   const latestResultsRef = useRef({});
-
-  async function triggerPrefetch(res, toppings, diff, servings) {
-    prefetchedRecipes.current = null;
-    try {
-      const diffLabel = DIFF.find(d => d.key === diff)?.label || "Medium";
-      const parsed = await callGemini(buildPrompt(res, toppings, diffLabel, servings));
-      prefetchedRecipes.current = { recipes: parsed, toppings, servings, diff };
-    } catch(e) { prefetchedRecipes.current = null; }
-  }
 
   function handleStepDone(value) {
     const key = STEPS[stepIdx].key;
@@ -602,7 +592,6 @@ export default function App() {
       setStepIdx(i => i + 1);
     } else {
       setScreen("summary");
-      triggerPrefetch(next, "", "medium", 2);
     }
   }
 
@@ -611,32 +600,25 @@ export default function App() {
     setError(null);
     setLastServings(servings);
     setScreen("loading");
-
-    // use prefetch if it matches
-    const pf = prefetchedRecipes.current;
-    if (pf && pf.toppings === toppings && pf.servings === servings && pf.diff === diff) {
-      setRecipes(pf.recipes);
-      setScreen("recipes");
-      return;
-    }
-
     try {
       const diffLabel = DIFF.find(d => d.key === diff)?.label || "Medium";
       const parsed = await callGemini(buildPrompt(res, toppings, diffLabel, servings));
       setRecipes(parsed);
       setScreen("recipes");
-    } catch(e) {
+    } catch (e) {
       setError("Error: " + (e.message || "try again"));
       setScreen("summary");
     }
   }
 
   function restart() {
-    setScreen("welcome"); setStepIdx(0);
-    setResults({}); setRecipes(null);
-    setError(null); setActiveRecipe(null);
+    setScreen("welcome");
+    setStepIdx(0);
+    setResults({});
+    setRecipes(null);
+    setError(null);
+    setActiveRecipe(null);
     latestResultsRef.current = {};
-    prefetchedRecipes.current = null;
   }
 
   function handleQuickPick() {
@@ -644,7 +626,6 @@ export default function App() {
     STEPS.forEach(s => { q[s.key] = pick(s.items); });
     setResults(q);
     latestResultsRef.current = q;
-    triggerPrefetch(q, "", "medium", 2);
     setScreen("summary");
   }
 
