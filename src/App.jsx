@@ -35,7 +35,7 @@ function buildPrompt(res, toppings, diffLabel, servings) {
   const CARB_MAP    = "if Rice: use white, brown, jasmine, or basmati rice; if Noodles: use pasta, soba, udon, ramen, or rice noodles; if Bread: use crusty bread, flatbread, tortillas, or pita; if Potatoes: use roasted, mashed, or wedged potatoes or sweet potato; if Grains: use quinoa, farro, couscous, or barley; if Legumes: use lentils, chickpeas, or black beans";
   const CUISINE_MAP = "if East Asian: Japanese, Chinese, or Korean flavors; if Southeast Asian: Thai, Vietnamese, or Filipino flavors; if South Asian: Indian, Sri Lankan, or Pakistani flavors; if Italian & Mediterranean: Italian, Greek, or Spanish flavors; if French & Continental: French, Belgian, or Swiss flavors; if Latin American: Mexican, Peruvian, or Brazilian flavors; if Middle Eastern: Lebanese, Turkish, Persian, or Moroccan flavors; if American: BBQ, Southern, or comfort food";
   return [
-    "You are a home cooking assistant. Generate exactly 2 dinner recipes as different from each other as possible while working withing the given parameter — different cooking method, flavor profile, texture. One light and fresh, one rich and hearty.",
+    "You are a home cooking assistant. Generate exactly 2 dinner recipes while working withing the given parameters of selected protein, veggie, carb, and cuisine. Try to make the two different with different cooking method, flavor profile, texture.",
     "",
     "Protein: " + res.protein + " (" + PROTEIN_MAP + ")",
     "Veggie: " + res.veggie + " (" + VEGGIE_MAP + ")",
