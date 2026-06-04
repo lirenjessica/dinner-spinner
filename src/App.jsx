@@ -41,7 +41,8 @@ function buildPrompt(res, toppings, diffLabel, servings) {
     "Veggie: " + res.veggie + " (" + VEGGIE_MAP + ")",
     "Carb: " + res.carb + " (" + CARB_MAP + ")",
     "Cuisine: " + res.style + " (" + CUISINE_MAP + ")",
-    "Extra ingredients (optional): " + (toppings || "none"),
+"CRITICAL: Both recipes MUST use " + res.protein + " as the protein. Do NOT use any other meat, fish, or protein. This is a hard requirement.",
+"Extra ingredients (optional): " + (toppings || "none"),
     "Difficulty: " + diffLabel,
     "Servings: " + servings + " people — scale quantities accordingly.",
     "",
@@ -54,7 +55,8 @@ function buildPrompt(res, toppings, diffLabel, servings) {
     "- steps: array of 6-8 plain-English cooking steps",
     "- shoppingList: array of strings with quantities for " + servings + " people (include everything: produce, protein, pantry, spices, oils, condiments)",
     "",
-    "No markdown, no backticks, raw JSON only.",
+    "FINAL CHECK: Confirm both recipes use " + res.protein + " only. No substitutions allowed.",
+"No markdown, no backticks, raw JSON only.",
   ].join("\n");
 }
 
