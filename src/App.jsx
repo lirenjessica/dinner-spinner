@@ -30,12 +30,12 @@ function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
 /* ── Gemini helpers ─────────────────────────────────────── */
 function buildPrompt(res, toppings, diffLabel, servings) {
-  const PROTEIN_MAP = "if Poultry: use chicken, duck, or turkey; if Red Meat: use beef or lamb; if Pork: use pork chops, tenderloin, or belly; if Ground Meat & Sausage: use ground beef, ground pork, chorizo, or Italian sausage; if Fish: use salmon, cod, tuna, or halibut; if Shrimp & Shellfish: use shrimp, scallops, mussels, or crab; if Plant-based: use tofu or tempeh";
+  const PROTEIN_MAP = "if Poultry: use chicken, duck, or turkey; if Red Meat: use beef or lamb; if Pork: use pork chops, tenderloin, or belly; if Ground Meat & Sausage: use ground beef, ground pork, ground chicken, chorizo, or Italian sausage; if Fish: use salmon, cod, tuna, or halibut; if Shrimp & Shellfish: use shrimp, scallops, mussels, or crab; if Plant-based: use tofu or tempeh";
   const VEGGIE_MAP  = "if Leafy Greens: use spinach, kale, bok choy, or Swiss chard; if Broccoli & Cabbage: use broccoli, cauliflower, cabbage, or Brussels sprouts; if Peppers, Eggplant & Asparagus: use bell peppers, eggplant, or asparagus; if Squash: use zucchini, butternut squash, or acorn squash; if Beans & Corn: use green beans, snap peas, edamame, or corn; if Root Veg: use carrots, sweet potato, parsnips, or beets";
   const CARB_MAP    = "if Rice: use white, brown, jasmine, or basmati rice; if Noodles: use pasta, soba, udon, ramen, or rice noodles; if Bread: use crusty bread, flatbread, tortillas, or pita; if Potatoes: use roasted, mashed, or wedged potatoes or sweet potato; if Grains: use quinoa, farro, couscous, or barley; if Legumes: use lentils, chickpeas, or black beans";
   const CUISINE_MAP = "if East Asian: Japanese, Chinese, or Korean flavors; if Southeast Asian: Thai, Vietnamese, or Filipino flavors; if South Asian: Indian, Sri Lankan, or Pakistani flavors; if Italian & Mediterranean: Italian, Greek, or Spanish flavors; if French & Continental: French, Belgian, or Swiss flavors; if Latin American: Mexican, Peruvian, or Brazilian flavors; if Middle Eastern: Lebanese, Turkish, Persian, or Moroccan flavors; if American: BBQ, Southern, or comfort food";
   return [
-    "You are a home cooking assistant. Generate exactly 2 dinner recipes as different from each other as possible — different cooking method, flavor profile, texture. One light and fresh, one rich and hearty.",
+    "You are a home cooking assistant. Generate exactly 2 dinner recipes as different from each other as possible while working withing the given parameter — different cooking method, flavor profile, texture. One light and fresh, one rich and hearty.",
     "",
     "Protein: " + res.protein + " (" + PROTEIN_MAP + ")",
     "Veggie: " + res.veggie + " (" + VEGGIE_MAP + ")",
