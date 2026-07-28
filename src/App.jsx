@@ -1,20 +1,27 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
+import {
+  loadPantry, addItems, removeItems, syncEnabled, KINDS, EMPTY_PANTRY,
+  staleItems, daysSince, pantryNames, ingredientName, STALE_DAYS,
+} from "./pantry.js";
+import { loadFavorites, saveFavorite, removeFavorite, isFavorite } from "./favorites.js";
+import { loadHistory, recordCook, feedbackHints, RATING_OPTIONS } from "./feedback.js";
 
-const GEMINI_KEY = import.meta.env.VITE_GEMINI_KEY;
-
+/* ── Design tokens ──────────────────────────────────────── */
 const ZEN = {
   bg: "#F7F3EE", surface: "#EDEAE4", border: "#D8D2C8",
   text: "#2C2825", muted: "#8C8680", faint: "#C5BFB7",
 };
+const SANS = "'DM Sans',sans-serif";
+const SERIF = "'Lora',serif";
 
 const STEPS = [
-  { key: "protein", label: "Protein", emoji: "🥩", color: "#8B4A3A", spinBg: "#F5EDE8",
+  { key: "protein", label: "Protein", emoji: "🥩", color: "#8B4A3A",
     items: ["Poultry","Red Meat","Pork","Ground Meat & Sausage","Fish","Shrimp & Shellfish","Plant-based"] },
-  { key: "veggie", label: "Veggie", emoji: "🥦", color: "#3D6E52", spinBg: "#EAF0EB",
+  { key: "veggie", label: "Veggie", emoji: "🥦", color: "#3D6E52",
     items: ["Leafy Greens","Broccoli & Cabbage","Peppers, Eggplant & Asparagus","Squash","Beans & Corn","Root Veg"] },
-  { key: "carb", label: "Carb", emoji: "🍚", color: "#7A5C2E", spinBg: "#F2EDE3",
+  { key: "carb", label: "Carb", emoji: "🍚", color: "#7A5C2E",
     items: ["Rice","Noodles","Bread","Potatoes","Grains","Legumes"] },
-  { key: "style", label: "Cuisine", emoji: "🌏", color: "#4A5A7A", spinBg: "#E9EBF2",
+  { key: "style", label: "Cuisine", emoji: "🌏", color: "#4A5A7A",
     items: ["East Asian","Southeast Asian","South Asian","Italian & Mediterranean","French & Continental","Latin American","Middle Eastern","American"] },
 ];
 
@@ -28,79 +35,93 @@ const SEG_COLORS = ["#C4856A","#7EAB8A","#C4A46A","#8A9BBF","#B07A6E","#6E9E80",
 
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-/* ── Gemini helpers ─────────────────────────────────────── */
-function buildPrompt(res, toppings, diffLabel, servings) {
-  const PROTEIN_MAP = "if Poultry: use chicken, duck, or turkey; if Red Meat: use beef or lamb; if Pork: use pork chops, tenderloin, or belly; if Ground Meat & Sausage: use ground beef, ground pork, ground chicken, chorizo, or Italian sausage; if Fish: use salmon, cod, tuna, or halibut; if Shrimp & Shellfish: use shrimp, scallops, mussels, or crab; if Plant-based: use tofu or tempeh";
-  const VEGGIE_MAP  = "if Leafy Greens: use spinach, kale, bok choy, or Swiss chard; if Broccoli & Cabbage: use broccoli, cauliflower, cabbage, or Brussels sprouts; if Peppers, Eggplant & Asparagus: use bell peppers, eggplant, or asparagus; if Squash: use zucchini, butternut squash, or acorn squash; if Beans & Corn: use green beans, snap peas, edamame, or corn; if Root Veg: use carrots, sweet potato, parsnips, or beets";
-  const CARB_MAP    = "if Rice: use white, brown, jasmine, or basmati rice; if Noodles: use pasta, soba, udon, ramen, or rice noodles; if Bread: use crusty bread, flatbread, tortillas, or pita; if Potatoes: use roasted, mashed, or wedged potatoes or sweet potato; if Grains: use quinoa, farro, couscous, or barley; if Legumes: use lentils, chickpeas, or black beans";
-  const CUISINE_MAP = "if East Asian: Japanese, Chinese, or Korean flavors; if Southeast Asian: Thai, Vietnamese, or Filipino flavors; if South Asian: Indian, Sri Lankan, or Pakistani flavors; if Italian & Mediterranean: Italian, Greek, or Spanish flavors; if French & Continental: French, Belgian, or Swiss flavors; if Latin American: Mexican, Peruvian, or Brazilian flavors; if Middle Eastern: Lebanese, Turkish, Persian, or Moroccan flavors; if American: BBQ, Southern, or comfort food";
-  return [
-    "You are a home cooking assistant. Generate exactly 2 dinner recipes while working withing the given parameters of selected protein, veggie, carb, and cuisine. Try to make the two different with different cooking method, flavor profile, texture.",
-    "",
-    "Protein: " + res.protein + " (" + PROTEIN_MAP + ")",
-    "Veggie: " + res.veggie + " (" + VEGGIE_MAP + ")",
-    "Carb: " + res.carb + " (" + CARB_MAP + ")",
-    "Cuisine: " + res.style + " (" + CUISINE_MAP + ")",
-"CRITICAL: Both recipes MUST use " + res.protein + " as the protein. Do NOT use any other meat, fish, or protein. This is a hard requirement.",
-"Extra ingredients (optional): " + (toppings || "none"),
-    "Difficulty: " + diffLabel,
-    "Servings: " + servings + " people — scale quantities accordingly.",
-    "",
-    "Descriptions: plain and direct, like a friend texting. One sentence on what it is, one on the flavors.",
-    "",
-    "Return ONLY a raw JSON array of exactly 2 objects. Each must have:",
-    "- name: string",
-    "- description: string (2 plain sentences)",
-    "- tags: array of 3 short strings (e.g. '30 min', 'one pan', 'spicy')",
-    "- steps: array of 6-8 plain-English cooking steps",
-    "- shoppingList: array of strings with quantities for " + servings + " people (include everything: produce, protein, pantry, spices, oils, condiments)",
-    "",
-    "FINAL CHECK: Confirm both recipes use " + res.protein + " only. No substitutions allowed.",
-"No markdown, no backticks, raw JSON only.",
-  ].join("\n");
+/* ── Shared style helpers ───────────────────────────────── */
+// Common button reset so every CTA doesn't repeat the same 6 props.
+function btn(extra) {
+  return { border:"none", cursor:"pointer", fontFamily:SANS, fontWeight:500,
+           WebkitTapHighlightColor:"transparent", touchAction:"manipulation", ...extra };
 }
 
-async function callGemini(prompt) {
-  const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=" + GEMINI_KEY;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message || "API error");
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  if (!text) throw new Error("Empty response from Gemini");
-  let clean = text.trim();
-  if (clean.startsWith("```")) {
-    clean = clean.replace(/^```[a-z]*\n?/, "").replace(/```\s*$/, "").trim();
+// Injected once at the app root instead of on every screen mount.
+const GLOBAL_CSS =
+  "@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;600&family=DM+Sans:wght@400;500&display=swap');" +
+  "*{box-sizing:border-box;margin:0;padding:0;}" +
+  "input:focus,textarea:focus{outline:none!important;border-color:#7A5C2E!important}" +
+  "@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}" +
+  "@keyframes softPulse{from{opacity:0.85;transform:scale(0.99)}to{opacity:1;transform:scale(1.02)}}" +
+  "@keyframes slideUp{from{transform:translateY(60px);opacity:0}to{transform:translateY(0);opacity:1}}" +
+  "@keyframes slideIn{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}" +
+  "@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}" +
+  "@keyframes bounce{from{transform:translateY(0)}to{transform:translateY(-8px)}}" +
+  "@keyframes pillPop{from{opacity:0;transform:scale(0.88) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}" +
+  "@keyframes gentleSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}";
+
+function GlobalStyle() { return <style>{GLOBAL_CSS}</style>; }
+
+/* ── Recipe API ─────────────────────────────────────────── */
+/* The Gemini key now lives on the server (see api/_core.js), so the browser
+   just posts the chosen ingredients and gets recipes back. Nothing secret
+   ships in this bundle. */
+async function fetchRecipes(payload, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch("/api/recipes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Could not generate recipes.");
+    if (!Array.isArray(data.recipes) || data.recipes.length === 0) {
+      throw new Error("No recipes came back — please try again.");
+    }
+    return data.recipes;
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error("That took too long — please try again.");
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  const a = clean.indexOf("[");
-  const b = clean.lastIndexOf("]");
-  if (a === -1 || b === -1) throw new Error("No JSON array in response");
-  const parsed = JSON.parse(clean.slice(a, b + 1));
-  if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("Invalid recipe array");
-  return parsed;
 }
 
 /* ── Text helpers for share modal ──────────────────────── */
+// Every list is guarded — a recipe missing a field must not crash Save/Share.
 function buildShoppingText(recipe, servings) {
-  return [recipe.name + " — Shopping List", "Serves " + servings, "", ...recipe.shoppingList.map(i => "• " + i)].join("\n");
+  return [recipe.name + " — Shopping List", "Serves " + servings, "", ...(recipe.shoppingList || []).map(i => "• " + i)].join("\n");
 }
 function buildRecipeText(recipe, servings) {
   return [
     recipe.name, "Serves " + servings, (recipe.tags || []).join(" · "), "",
-    recipe.description, "", "SHOPPING LIST",
-    ...recipe.shoppingList.map(i => "• " + i), "", "STEPS",
-    ...recipe.steps.map((s, i) => (i + 1) + ". " + s),
+    recipe.description || "", "", "SHOPPING LIST",
+    ...(recipe.shoppingList || []).map(i => "• " + i), "", "STEPS",
+    ...(recipe.steps || []).map((s, i) => (i + 1) + ". " + s),
   ].join("\n");
 }
 
 /* ══════════════════════════════════════════════════════════
    PIE WHEEL
 ══════════════════════════════════════════════════════════ */
+const WHEEL_SIZE = 280;
+
+/* Wraps a wheel label onto at most two lines instead of chopping it mid-word
+   ("Shrimp & Sh…"). Splits at the space that leaves the most even halves. */
+function wrapLabel(text, maxChars = 13) {
+  if (text.length <= maxChars) return [text];
+  const words = text.split(" ");
+  if (words.length === 1) return [text]; // one long word — shrink instead
+  let best = null;
+  for (let i = 1; i < words.length; i++) {
+    const a = words.slice(0, i).join(" "), b = words.slice(i).join(" ");
+    const score = Math.abs(a.length - b.length) + Math.max(0, a.length - maxChars) * 3 + Math.max(0, b.length - maxChars) * 3;
+    if (!best || score < best.score) best = { score, lines: [a, b] };
+  }
+  return best.lines;
+}
+
 function PieWheel({ items, color, phase, winner, onSpinEnd }) {
-  const SIZE = 280;
+  const SIZE = WHEEL_SIZE;
   const cx = SIZE / 2, cy = SIZE / 2, r = SIZE / 2 - 4;
   const n = items.length;
   const segAngle = 360 / n;
@@ -109,6 +130,27 @@ function PieWheel({ items, color, phase, winner, onSpinEnd }) {
   const spinStateRef = useRef({ active: false, speed: 0, lastTs: null });
   const rafRef = useRef(null);
   const [displayRot, setDisplayRot] = useState(0);
+
+  // Geometry only depends on the item list — compute segment paths/labels once.
+  const segments = useMemo(() => {
+    const polar = (angleDeg, radius) => {
+      const rad = ((angleDeg - 90) * Math.PI) / 180;
+      return { x: cx + radius * Math.cos(rad), y: cy + radius * Math.sin(rad) };
+    };
+    return items.map((item, i) => {
+      const start = i * segAngle, end = start + segAngle;
+      const p1 = polar(start, r), p2 = polar(end, r);
+      const d = "M " + cx + " " + cy + " L " + p1.x + " " + p1.y + " A " + r + " " + r + " 0 " + (segAngle > 180 ? 1 : 0) + " 1 " + p2.x + " " + p2.y + " Z";
+      const lp = polar(i * segAngle + segAngle / 2, r * 0.62);
+
+      // Labels on the left half would render upside down, so flip them 180°.
+      let labelAngle = i * segAngle + segAngle / 2 - 90;
+      const facing = ((labelAngle % 360) + 360) % 360;
+      if (facing > 90 && facing < 270) labelAngle += 180;
+
+      return { item, d, lp, labelAngle, lines: wrapLabel(item) };
+    });
+  }, [items, segAngle, cx, cy, r]);
 
   useEffect(() => {
     if (phase === "spinning") {
@@ -162,37 +204,25 @@ function PieWheel({ items, color, phase, winner, onSpinEnd }) {
     }
   }, [displayRot, phase]);
 
-  function polarToCart(angleDeg, radius) {
-    const rad = ((angleDeg - 90) * Math.PI) / 180;
-    return { x: cx + radius * Math.cos(rad), y: cy + radius * Math.sin(rad) };
-  }
-  function segPath(i) {
-    const start = i * segAngle, end = start + segAngle;
-    const p1 = polarToCart(start, r), p2 = polarToCart(end, r);
-    return "M " + cx + " " + cy + " L " + p1.x + " " + p1.y + " A " + r + " " + r + " 0 " + (segAngle > 180 ? 1 : 0) + " 1 " + p2.x + " " + p2.y + " Z";
-  }
-  function labelPos(i) { return polarToCart(i * segAngle + segAngle / 2, r * 0.62); }
-
   return (
     <div style={{ position:"relative", width:SIZE, height:SIZE+32, display:"flex", flexDirection:"column", alignItems:"center" }}>
       <div style={{ width:0, height:0, borderLeft:"12px solid transparent", borderRight:"12px solid transparent", borderTop:"26px solid " + color, position:"absolute", top:0, left:"50%", transform:"translateX(-50%)", zIndex:10 }} />
       <div ref={wheelRef} style={{ width:SIZE, height:SIZE, borderRadius:"50%", overflow:"hidden", boxShadow:"0 4px 24px rgba(44,40,37,0.14)", marginTop:6, willChange:"transform" }}>
         <svg width={SIZE} height={SIZE} viewBox={"0 0 " + SIZE + " " + SIZE}>
-          {items.map((item, i) => {
-            const lp = labelPos(i);
-            const labelAngle = i * segAngle + segAngle / 2 - 90;
-            return (
-              <g key={i}>
-                <path d={segPath(i)} fill={SEG_COLORS[i % SEG_COLORS.length]} stroke="#fff" strokeWidth="1.5" />
-                <text x={lp.x} y={lp.y} textAnchor="middle" dominantBaseline="middle"
-                  transform={"rotate(" + labelAngle + "," + lp.x + "," + lp.y + ")"}
-                  fontSize={n > 6 ? "10" : "12"} fontFamily="'DM Sans',sans-serif" fontWeight="500" fill="#fff"
-                  style={{ pointerEvents:"none", userSelect:"none" }}>
-                  {item.length > 12 ? item.slice(0,11) + "…" : item}
-                </text>
-              </g>
-            );
-          })}
+          {segments.map((seg, i) => (
+            <g key={i}>
+              <path d={seg.d} fill={SEG_COLORS[i % SEG_COLORS.length]} stroke="#fff" strokeWidth="1.5" />
+              <text x={seg.lp.x} y={seg.lp.y} textAnchor="middle" dominantBaseline="middle"
+                transform={"rotate(" + seg.labelAngle + "," + seg.lp.x + "," + seg.lp.y + ")"}
+                fontSize={seg.lines.some(l => l.length > 13) ? 9 : n > 6 ? 10 : 12}
+                fontFamily={SANS} fontWeight="500" fill="#fff"
+                style={{ pointerEvents:"none", userSelect:"none" }}>
+                {seg.lines.map((line, li) => (
+                  <tspan key={li} x={seg.lp.x} dy={li === 0 ? (seg.lines.length > 1 ? "-0.55em" : "0") : "1.1em"}>{line}</tspan>
+                ))}
+              </text>
+            </g>
+          ))}
           <circle cx={cx} cy={cy} r={22} fill={ZEN.bg} stroke="#fff" strokeWidth="2" />
           <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" fontSize="18">🍽️</text>
         </svg>
@@ -220,22 +250,21 @@ function SpinScreen({ step, stepIdx, total, onDone }) {
 
   return (
     <div style={{ minHeight:"100vh", background:ZEN.bg, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 28px", position:"relative" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;600&family=DM+Sans:wght@400;500&display=swap');*{box-sizing:border-box;margin:0;padding:0;}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}@keyframes softPulse{from{opacity:0.85;transform:scale(0.99)}to{opacity:1;transform:scale(1.02)}}`}</style>
       <div style={{ position:"absolute", top:28, display:"flex", gap:10 }}>
         {STEPS.map((s, i) => <div key={s.key} style={{ width:i===stepIdx?32:10, height:10, borderRadius:5, background:i<stepIdx?color:i===stepIdx?color:ZEN.border, opacity:i<stepIdx?0.4:1, transition:"all 0.4s" }} />)}
       </div>
-      <div style={{ fontSize:11, letterSpacing:"3px", color:ZEN.muted, fontFamily:"'DM Sans',sans-serif", marginBottom:12, textTransform:"uppercase" }}>{stepIdx+1} of {total}</div>
+      <div style={{ fontSize:11, letterSpacing:"3px", color:ZEN.muted, fontFamily:SANS, marginBottom:12, textTransform:"uppercase" }}>{stepIdx+1} of {total}</div>
       <div style={{ fontSize:56, marginBottom:8, lineHeight:1 }}>{emoji}</div>
-      <h2 style={{ fontFamily:"'Lora',serif", fontSize:34, fontWeight:400, color:ZEN.text, margin:"0 0 32px", letterSpacing:1 }}>{label}</h2>
+      <h2 style={{ fontFamily:SERIF, fontSize:34, fontWeight:400, color:ZEN.text, margin:"0 0 32px", letterSpacing:1 }}>{label}</h2>
       <PieWheel items={items} color={color} phase={phase} winner={winner} onSpinEnd={handleSpinEnd} />
       <div style={{ marginTop:40, height:72, display:"flex", alignItems:"center", justifyContent:"center" }}>
-        {phase === "idle" && <button onTouchStart={handleSpin} onClick={handleSpin} style={{ background:color, color:"#fff", border:"none", borderRadius:50, padding:"18px 60px", fontSize:20, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", boxShadow:"0 4px 28px "+color+"44", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>Spin</button>}
-        {phase === "spinning" && <button onTouchStart={handleStop} onClick={handleStop} style={{ background:color, color:"#fff", border:"none", borderRadius:50, padding:"18px 60px", fontSize:20, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", boxShadow:"0 4px 28px "+color+"55", animation:"softPulse 1.2s ease infinite alternate", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>Stop</button>}
-        {phase === "stopping" && <p style={{ color:ZEN.muted, fontSize:16, fontFamily:"'DM Sans',sans-serif" }}>Landing…</p>}
+        {phase === "idle" && <button onTouchStart={handleSpin} onClick={handleSpin} style={btn({ background:color, color:"#fff", borderRadius:50, padding:"18px 60px", fontSize:20, boxShadow:"0 4px 28px "+color+"44" })}>Spin</button>}
+        {phase === "spinning" && <button onTouchStart={handleStop} onClick={handleStop} style={btn({ background:color, color:"#fff", borderRadius:50, padding:"18px 60px", fontSize:20, boxShadow:"0 4px 28px "+color+"55", animation:"softPulse 1.2s ease infinite alternate" })}>Stop</button>}
+        {phase === "stopping" && <p style={{ color:ZEN.muted, fontSize:16, fontFamily:SANS }}>Landing…</p>}
         {phase === "done" && winner && (
           <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:14, animation:"fadeIn 0.5s ease" }}>
-            <p style={{ color, fontSize:22, fontFamily:"'Lora',serif", fontWeight:600 }}>✓ {winner}</p>
-            <button onTouchStart={() => onDone(winner)} onClick={() => onDone(winner)} style={{ background:color, color:"#fff", border:"none", borderRadius:50, padding:"16px 52px", fontSize:19, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", boxShadow:"0 4px 24px "+color+"44", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>Next →</button>
+            <p style={{ color, fontSize:22, fontFamily:SERIF, fontWeight:600 }}>✓ {winner}</p>
+            <button onTouchStart={() => onDone(winner)} onClick={() => onDone(winner)} style={btn({ background:color, color:"#fff", borderRadius:50, padding:"16px 52px", fontSize:19, boxShadow:"0 4px 24px "+color+"44" })}>Next →</button>
           </div>
         )}
       </div>
@@ -246,7 +275,7 @@ function SpinScreen({ step, stepIdx, total, onDone }) {
 /* ══════════════════════════════════════════════════════════
    RESPIN MODAL
 ══════════════════════════════════════════════════════════ */
-function RespinModal({ step, currentValue, onSave, onClose }) {
+function RespinModal({ step, onSave, onClose }) {
   const { label, emoji, color, items } = step;
   const [reelPhase, setReelPhase] = useState("idle");
   const [lockedItem, setLockedItem] = useState(null);
@@ -264,27 +293,26 @@ function RespinModal({ step, currentValue, onSave, onClose }) {
   return (
     <div style={{ position:"fixed", inset:0, background:"rgba(44,40,37,0.55)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:100 }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} style={{ background:ZEN.bg, borderRadius:"24px 24px 0 0", padding:"28px 24px 40px", width:"100%", maxWidth:480, animation:"slideUp 0.3s ease" }}>
-        <style>{`@keyframes slideUp{from{transform:translateY(60px);opacity:0}to{transform:translateY(0);opacity:1}}@keyframes softPulse{from{opacity:0.85;transform:scale(0.99)}to{opacity:1;transform:scale(1.02)}}`}</style>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10 }}><span style={{ fontSize:28 }}>{emoji}</span><span style={{ fontFamily:"'Lora',serif", fontSize:22, color:ZEN.text }}>{label}</span></div>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}><span style={{ fontSize:28 }}>{emoji}</span><span style={{ fontFamily:SERIF, fontSize:22, color:ZEN.text }}>{label}</span></div>
           <button onClick={onClose} style={{ background:"none", border:"none", fontSize:22, color:ZEN.muted, cursor:"pointer" }}>✕</button>
         </div>
         <div style={{ display:"flex", gap:8, marginBottom:24 }}>
-          {["spin","manual"].map(t => <button key={t} onClick={() => setTab(t)} style={{ flex:1, padding:"10px", borderRadius:10, border:"none", background:tab===t?color:ZEN.surface, color:tab===t?"#fff":ZEN.muted, fontFamily:"'DM Sans',sans-serif", fontSize:15, fontWeight:500, cursor:"pointer", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>{t === "spin" ? "Re-spin" : "Type it in"}</button>)}
+          {["spin","manual"].map(t => <button key={t} onClick={() => setTab(t)} style={btn({ flex:1, padding:"10px", borderRadius:10, background:tab===t?color:ZEN.surface, color:tab===t?"#fff":ZEN.muted, fontSize:15 })}>{t === "spin" ? "Re-spin" : "Type it in"}</button>)}
         </div>
         {tab === "spin" && (
           <div style={{ display:"flex", flexDirection:"column", gap:12, alignItems:"center" }}>
             <PieWheel items={items} color={color} phase={reelPhase} winner={lockedItem} onSpinEnd={() => setReelPhase("locked")} />
             <div style={{ height:52, display:"flex", alignItems:"center", justifyContent:"center" }}>
-              {reelPhase === "idle" && <button onTouchStart={startSpin} onClick={startSpin} style={{ background:color, color:"#fff", border:"none", borderRadius:50, padding:"12px 40px", fontSize:16, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>Spin</button>}
-              {reelPhase === "spinning" && <button onTouchStart={handleStop} onClick={handleStop} style={{ background:color, color:"#fff", border:"none", borderRadius:50, padding:"12px 40px", fontSize:16, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", animation:"softPulse 1.2s ease infinite alternate", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>Stop</button>}
-              {reelPhase === "stopping" && <p style={{ color:ZEN.muted, fontSize:15, fontFamily:"'DM Sans',sans-serif" }}>Landing…</p>}
-              {reelPhase === "locked" && lockedItem && <p style={{ color, fontSize:16, fontFamily:"'Lora',serif", fontWeight:600 }}>✓ {lockedItem}</p>}
+              {reelPhase === "idle" && <button onTouchStart={startSpin} onClick={startSpin} style={btn({ background:color, color:"#fff", borderRadius:50, padding:"12px 40px", fontSize:16 })}>Spin</button>}
+              {reelPhase === "spinning" && <button onTouchStart={handleStop} onClick={handleStop} style={btn({ background:color, color:"#fff", borderRadius:50, padding:"12px 40px", fontSize:16, animation:"softPulse 1.2s ease infinite alternate" })}>Stop</button>}
+              {reelPhase === "stopping" && <p style={{ color:ZEN.muted, fontSize:15, fontFamily:SANS }}>Landing…</p>}
+              {reelPhase === "locked" && lockedItem && <p style={{ color, fontSize:16, fontFamily:SERIF, fontWeight:600 }}>✓ {lockedItem}</p>}
             </div>
             {reelPhase === "locked" && lockedItem && (
               <div style={{ width:"100%", display:"flex", flexDirection:"column", gap:10, alignItems:"center" }}>
-                <button onTouchStart={() => onSave(lockedItem)} onClick={() => onSave(lockedItem)} style={{ width:"100%", background:color, color:"#fff", border:"none", borderRadius:12, padding:"14px", fontSize:17, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>Use "{lockedItem}"</button>
-                <button onTouchStart={startSpin} onClick={startSpin} style={{ background:"none", border:"none", color:ZEN.muted, fontSize:14, fontFamily:"'DM Sans',sans-serif", cursor:"pointer", textDecoration:"underline" }}>Spin again</button>
+                <button onTouchStart={() => onSave(lockedItem)} onClick={() => onSave(lockedItem)} style={btn({ width:"100%", background:color, color:"#fff", borderRadius:12, padding:"14px", fontSize:17 })}>Use "{lockedItem}"</button>
+                <button onTouchStart={startSpin} onClick={startSpin} style={{ background:"none", border:"none", color:ZEN.muted, fontSize:14, fontFamily:SANS, cursor:"pointer", textDecoration:"underline" }}>Spin again</button>
               </div>
             )}
           </div>
@@ -292,10 +320,10 @@ function RespinModal({ step, currentValue, onSave, onClose }) {
         {tab === "manual" && (
           <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
             <div style={{ display:"flex", flexWrap:"wrap", gap:8, maxHeight:200, overflowY:"auto" }}>
-              {items.map(it => <button key={it} onClick={() => setManual(it)} style={{ background:manual===it?color:ZEN.surface, color:manual===it?"#fff":ZEN.text, border:"1.5px solid "+(manual===it?color:ZEN.border), borderRadius:20, padding:"8px 16px", fontFamily:"'DM Sans',sans-serif", fontSize:15, cursor:"pointer" }}>{it}</button>)}
+              {items.map(it => <button key={it} onClick={() => setManual(it)} style={{ background:manual===it?color:ZEN.surface, color:manual===it?"#fff":ZEN.text, border:"1.5px solid "+(manual===it?color:ZEN.border), borderRadius:20, padding:"8px 16px", fontFamily:SANS, fontSize:15, cursor:"pointer" }}>{it}</button>)}
             </div>
-            <input value={manual} onChange={e => setManual(e.target.value)} placeholder="Or type your own…" style={{ width:"100%", padding:"12px 14px", border:"1.5px solid "+ZEN.border, borderRadius:10, background:ZEN.surface, color:ZEN.text, fontFamily:"'DM Sans',sans-serif", fontSize:16, outline:"none" }} />
-            <button onClick={() => manual.trim() && onSave(manual.trim())} disabled={!manual.trim()} style={{ background:manual.trim()?color:ZEN.border, color:manual.trim()?"#fff":ZEN.muted, border:"none", borderRadius:12, padding:"14px", fontSize:17, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer" }}>Save</button>
+            <input value={manual} onChange={e => setManual(e.target.value)} placeholder="Or type your own…" style={{ width:"100%", padding:"12px 14px", border:"1.5px solid "+ZEN.border, borderRadius:10, background:ZEN.surface, color:ZEN.text, fontFamily:SANS, fontSize:16, outline:"none" }} />
+            <button onClick={() => manual.trim() && onSave(manual.trim())} disabled={!manual.trim()} style={btn({ background:manual.trim()?color:ZEN.border, color:manual.trim()?"#fff":ZEN.muted, borderRadius:12, padding:"14px", fontSize:17, cursor:manual.trim()?"pointer":"default" })}>Save</button>
           </div>
         )}
       </div>
@@ -324,15 +352,14 @@ function ShareModal({ title, text, onClose }) {
   return (
     <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(44,40,37,0.6)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:200 }}>
       <div onClick={e => e.stopPropagation()} style={{ background:ZEN.bg, borderRadius:"24px 24px 0 0", padding:"28px 24px 48px", width:"100%", maxWidth:520, animation:"slideUp 0.3s ease", maxHeight:"80vh", display:"flex", flexDirection:"column", gap:16 }}>
-        <style>{`@keyframes slideUp{from{transform:translateY(60px);opacity:0}to{transform:translateY(0);opacity:1}}`}</style>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <h3 style={{ fontFamily:"'Lora',serif", fontSize:20, fontWeight:400, color:ZEN.text }}>{title}</h3>
+          <h3 style={{ fontFamily:SERIF, fontSize:20, fontWeight:400, color:ZEN.text }}>{title}</h3>
           <button onClick={onClose} style={{ background:"none", border:"none", fontSize:22, color:ZEN.muted, cursor:"pointer" }}>✕</button>
         </div>
-        <pre style={{ fontFamily:"'DM Sans',sans-serif", fontSize:14, color:ZEN.text, background:"#fff", border:"1px solid "+ZEN.border, borderRadius:12, padding:"14px 16px", overflowY:"auto", flex:1, whiteSpace:"pre-wrap", wordBreak:"break-word", lineHeight:1.7 }}>{text}</pre>
+        <pre style={{ fontFamily:SANS, fontSize:14, color:ZEN.text, background:"#fff", border:"1px solid "+ZEN.border, borderRadius:12, padding:"14px 16px", overflowY:"auto", flex:1, whiteSpace:"pre-wrap", wordBreak:"break-word", lineHeight:1.7 }}>{text}</pre>
         <div style={{ display:"flex", gap:10 }}>
-          <button onTouchStart={handleCopy} onClick={handleCopy} style={{ flex:1, background:copied?"#3D6E52":ZEN.text, color:"#fff", border:"none", borderRadius:12, padding:"14px", fontSize:16, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>{copied ? "Copied ✓" : "Copy text"}</button>
-          {typeof navigator !== "undefined" && navigator.share && <button onTouchStart={handleShare} onClick={handleShare} style={{ flex:1, background:"transparent", color:ZEN.text, border:"1.5px solid "+ZEN.border, borderRadius:12, padding:"14px", fontSize:16, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>Share</button>}
+          <button onTouchStart={handleCopy} onClick={handleCopy} style={btn({ flex:1, background:copied?"#3D6E52":ZEN.text, color:"#fff", borderRadius:12, padding:"14px", fontSize:16 })}>{copied ? "Copied ✓" : "Copy text"}</button>
+          {typeof navigator !== "undefined" && navigator.share && <button onTouchStart={handleShare} onClick={handleShare} style={btn({ flex:1, background:"transparent", color:ZEN.text, border:"1.5px solid "+ZEN.border, borderRadius:12, padding:"14px", fontSize:16 })}>Share</button>}
         </div>
       </div>
     </div>
@@ -342,13 +369,27 @@ function ShareModal({ title, text, onClose }) {
 /* ══════════════════════════════════════════════════════════
    SUMMARY SCREEN
 ══════════════════════════════════════════════════════════ */
-function SummaryScreen({ results, setResults, onGenerate }) {
-  const [toppings, setToppings] = useState("");
-  const [diff, setDiff] = useState("medium");
-  const [servings, setServings] = useState(2);
+/* Servings and difficulty rarely change night to night, so remember the last
+   choice instead of resetting to 2/Medium on every spin. */
+const PREFS_KEY = "dinner-spinner-prefs";
+function readPrefs() {
+  try { return JSON.parse(localStorage.getItem(PREFS_KEY) || "{}"); } catch { return {}; }
+}
+function writePrefs(patch) {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ ...readPrefs(), ...patch })); } catch { /* quota */ }
+}
+
+/* toppings/diff/servings are owned by App, not this screen — otherwise leaving
+   for the pantry or a recipe and coming back would wipe what you typed. */
+function SummaryScreen({ results, setResults, onGenerate, onPantry, pantryCount, prefs, setPrefs, header }) {
+  const { toppings, diff, servings } = prefs;
   const [editing, setEditing] = useState(null);
   const submittingRef = useRef(false);
   const editingStep = editing ? STEPS.find(s => s.key === editing) : null;
+
+  const setToppings = v => setPrefs(p => ({ ...p, toppings: v }));
+  const setDiff = v => { setPrefs(p => ({ ...p, diff: v })); writePrefs({ diff: v }); };
+  const setServings = v => { setPrefs(p => ({ ...p, servings: v })); writePrefs({ servings: v }); };
 
   function handleGetRecipes() {
     if (submittingRef.current) return;
@@ -358,17 +399,18 @@ function SummaryScreen({ results, setResults, onGenerate }) {
   }
 
   return (
-    <div style={{ minHeight:"100vh", background:ZEN.bg, display:"flex", flexDirection:"column", alignItems:"center", padding:"52px 24px 120px", gap:28, fontFamily:"'DM Sans',sans-serif", position:"relative" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;600&family=DM+Sans:wght@400;500&display=swap');*{box-sizing:border-box;}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}input:focus,textarea:focus{outline:none!important;border-color:#7A5C2E!important}`}</style>
+    <div style={{ minHeight:"100vh", background:ZEN.bg, fontFamily:SANS, position:"relative" }}>
+      {header}
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"32px 24px 120px", gap:28 }}>
       <div style={{ textAlign:"center" }}>
         <p style={{ fontSize:13, letterSpacing:"2px", color:ZEN.muted, marginBottom:10, textTransform:"uppercase" }}>Ready to cook</p>
-        <h1 style={{ fontFamily:"'Lora',serif", fontSize:32, fontWeight:400, color:ZEN.text, letterSpacing:1 }}>Today's ingredients</h1>
+        <h1 style={{ fontFamily:SERIF, fontSize:32, fontWeight:400, color:ZEN.text, letterSpacing:1 }}>Today's ingredients</h1>
       </div>
       <div style={{ display:"flex", gap:12, flexWrap:"wrap", justifyContent:"center", maxWidth:480 }}>
         {STEPS.map(s => (
           <button key={s.key} onClick={() => setEditing(s.key)} style={{ background:"#fff", border:"2px solid "+s.color+"33", borderRadius:50, padding:"12px 22px", display:"flex", alignItems:"center", gap:10, cursor:"pointer", boxShadow:"0 2px 8px rgba(44,40,37,0.06)", animation:"fadeIn 0.4s ease", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>
             <span style={{ fontSize:22 }}>{s.emoji}</span>
-            <span style={{ fontFamily:"'Lora',serif", fontSize:18, color:ZEN.text }}>{results[s.key]}</span>
+            <span style={{ fontFamily:SERIF, fontSize:18, color:ZEN.text }}>{results[s.key]}</span>
             <span style={{ fontSize:13, color:ZEN.faint }}>✎</span>
           </button>
         ))}
@@ -379,30 +421,36 @@ function SummaryScreen({ results, setResults, onGenerate }) {
           <label style={{ fontSize:14, color:ZEN.muted }}>Ingredients you want to try to use</label>
           <span style={{ fontSize:12, color:ZEN.faint, fontStyle:"italic" }}>optional</span>
         </div>
-        <textarea value={toppings} onChange={e => setToppings(e.target.value)} placeholder="Dump anything here — garlic, lemon, that half tin of coconut milk… recipes will try to work them in but no promises." rows={3} style={{ width:"100%", background:"#fff", border:"1.5px solid "+ZEN.border, borderRadius:12, color:ZEN.text, fontSize:15, fontFamily:"'DM Sans',sans-serif", padding:"12px 14px", resize:"vertical", lineHeight:1.6 }} />
+        <textarea value={toppings} onChange={e => setToppings(e.target.value)} placeholder="Just for tonight — garlic, lemon, that half tin of coconut milk… recipes will try to work them in but no promises." rows={3} style={{ width:"100%", background:"#fff", border:"1.5px solid "+ZEN.border, borderRadius:12, color:ZEN.text, fontSize:15, fontFamily:SANS, padding:"12px 14px", resize:"vertical", lineHeight:1.6 }} />
+        <button onClick={onPantry} style={btn({ background:"none", color:ZEN.muted, padding:"10px 0 0", fontSize:14, fontWeight:400, textDecoration:"underline" })}>
+          🥫 {pantryCount ? "Using " + pantryCount + " pantry item" + (pantryCount === 1 ? "" : "s") : "Set up your pantry"}
+        </button>
       </div>
       <div style={{ width:"100%", maxWidth:440 }}>
         <div style={{ fontSize:14, color:ZEN.muted, marginBottom:10 }}>How much effort tonight?</div>
         <div style={{ display:"flex", gap:10 }}>
           {DIFF.map(d => {
             const sel = diff === d.key;
-            return <button key={d.key} onClick={() => setDiff(d.key)} style={{ flex:1, background:sel?d.color:"#fff", border:"1.5px solid "+(sel?d.color:ZEN.border), color:sel?"#fff":ZEN.text, borderRadius:12, padding:"12px 6px", cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontSize:15, fontWeight:500, WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}><div style={{ fontSize:22, marginBottom:4 }}>{d.icon}</div>{d.label}<div style={{ fontSize:12, marginTop:3, opacity:0.75, fontWeight:400 }}>{d.desc}</div></button>;
+            return <button key={d.key} onClick={() => setDiff(d.key)} style={btn({ flex:1, background:sel?d.color:"#fff", border:"1.5px solid "+(sel?d.color:ZEN.border), color:sel?"#fff":ZEN.text, borderRadius:12, padding:"12px 6px", fontSize:15 })}><div style={{ fontSize:22, marginBottom:4 }}>{d.icon}</div>{d.label}<div style={{ fontSize:12, marginTop:3, opacity:0.75, fontWeight:400 }}>{d.desc}</div></button>;
           })}
         </div>
       </div>
       <div style={{ width:"100%", maxWidth:440 }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
           <span style={{ fontSize:14, color:ZEN.muted }}>Servings</span>
-          <span style={{ fontSize:18, fontFamily:"'Lora',serif", color:ZEN.text, fontWeight:600 }}>{servings} people</span>
+          <span style={{ fontSize:18, fontFamily:SERIF, color:ZEN.text, fontWeight:600 }}>{servings} people</span>
         </div>
-        <input type="range" min={1} max={8} step={1} value={servings} onChange={e => setServings(Number(e.target.value))} style={{ width:"100%", accentColor:"#7A5C2E", height:6, cursor:"pointer" }} />
+        <input type="range" min={1} max={8} step={1} value={servings}
+          onChange={e => setServings(Number(e.target.value))}
+          style={{ width:"100%", accentColor:"#7A5C2E", height:6, cursor:"pointer" }} />
         <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:ZEN.faint, marginTop:4 }}>
           {[1,2,3,4,5,6,7,8].map(n => <span key={n}>{n}</span>)}
         </div>
       </div>
-      {editing && editingStep && <RespinModal step={editingStep} currentValue={results[editing]} onSave={val => { setResults(r => ({ ...r, [editing]: val })); setEditing(null); }} onClose={() => setEditing(null)} />}
+      </div>
+      {editing && editingStep && <RespinModal step={editingStep} onSave={val => { setResults(r => ({ ...r, [editing]: val })); setEditing(null); }} onClose={() => setEditing(null)} />}
       <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"16px 24px 32px", background:"linear-gradient(to top, "+ZEN.bg+" 60%, transparent)", display:"flex", justifyContent:"center", zIndex:50 }}>
-        <div onTouchStart={e => { e.preventDefault(); handleGetRecipes(); }} onClick={handleGetRecipes} role="button" style={{ background:ZEN.text, WebkitTapHighlightColor:"transparent", touchAction:"manipulation", color:"#fff", borderRadius:14, padding:"18px 0", fontSize:19, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", textAlign:"center", width:"100%", maxWidth:440, boxShadow:"0 4px 24px rgba(44,40,37,0.22)", userSelect:"none", WebkitUserSelect:"none" }}>Get recipes →</div>
+        <div onTouchStart={e => { e.preventDefault(); handleGetRecipes(); }} onClick={handleGetRecipes} role="button" style={{ background:ZEN.text, WebkitTapHighlightColor:"transparent", touchAction:"manipulation", color:"#fff", borderRadius:14, padding:"18px 0", fontSize:19, fontFamily:SANS, fontWeight:500, cursor:"pointer", textAlign:"center", width:"100%", maxWidth:440, boxShadow:"0 4px 24px rgba(44,40,37,0.22)", userSelect:"none", WebkitUserSelect:"none" }}>Get recipes →</div>
       </div>
     </div>
   );
@@ -411,33 +459,35 @@ function SummaryScreen({ results, setResults, onGenerate }) {
 /* ══════════════════════════════════════════════════════════
    RECIPES SCREEN
 ══════════════════════════════════════════════════════════ */
-function RecipesScreen({ recipes, onBack, onRestart, onSelect }) {
+function RecipesScreen({ recipes, onBack, onRestart, onSelect, header }) {
   const accents = ["#8B4A3A","#3D6E52"];
   return (
-    <div style={{ minHeight:"100vh", background:ZEN.bg, display:"flex", flexDirection:"column", alignItems:"center", padding:"48px 24px 80px", gap:24, fontFamily:"'DM Sans',sans-serif" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;600&family=DM+Sans:wght@400;500&display=swap');*{box-sizing:border-box;}@keyframes slideIn{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}`}</style>
+    <div style={{ minHeight:"100vh", background:ZEN.bg, fontFamily:SANS }}>
+      {header}
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"32px 24px 80px", gap:24 }}>
       <div style={{ textAlign:"center" }}>
         <p style={{ fontSize:13, letterSpacing:"2px", color:ZEN.muted, marginBottom:10, textTransform:"uppercase" }}>Choose one</p>
-        <h1 style={{ fontFamily:"'Lora',serif", fontSize:32, fontWeight:400, color:ZEN.text, letterSpacing:1 }}>Tonight's recipes</h1>
+        <h1 style={{ fontFamily:SERIF, fontSize:32, fontWeight:400, color:ZEN.text, letterSpacing:1 }}>Tonight's recipes</h1>
       </div>
       <div style={{ width:"100%", maxWidth:480, display:"flex", flexDirection:"column", gap:16 }}>
         {recipes.map((r, i) => {
           const c = accents[i % accents.length];
           return (
             <div key={i} style={{ background:"#fff", border:"1.5px solid "+ZEN.border, borderLeft:"5px solid "+c, borderRadius:16, padding:"22px 24px", animation:"slideIn 0.4s ease "+(i*0.15)+"s both", boxShadow:"0 2px 12px rgba(44,40,37,0.06)" }}>
-              <div style={{ fontSize:13, letterSpacing:"1px", color:c, fontFamily:"'DM Sans',sans-serif", fontWeight:500, marginBottom:8, textTransform:"uppercase" }}>Option {i+1}</div>
-              <div style={{ fontSize:22, fontFamily:"'Lora',serif", color:ZEN.text, marginBottom:10, lineHeight:1.3 }}>{r.name}</div>
+              <div style={{ fontSize:13, letterSpacing:"1px", color:c, fontFamily:SANS, fontWeight:500, marginBottom:8, textTransform:"uppercase" }}>Option {i+1}</div>
+              <div style={{ fontSize:22, fontFamily:SERIF, color:ZEN.text, marginBottom:10, lineHeight:1.3 }}>{r.name}</div>
               <div style={{ fontSize:17, color:ZEN.muted, lineHeight:1.7, marginBottom:14 }}>{r.description}</div>
               <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:20 }}>
-                {(r.tags||[]).map(tag => <span key={tag} style={{ fontSize:13, color:c, background:c+"12", borderRadius:20, padding:"4px 12px", fontFamily:"'DM Sans',sans-serif" }}>{tag}</span>)}
+                {(r.tags||[]).map(tag => <span key={tag} style={{ fontSize:13, color:c, background:c+"12", borderRadius:20, padding:"4px 12px", fontFamily:SANS }}>{tag}</span>)}
               </div>
-              <button onTouchStart={() => onSelect(r)} onClick={() => onSelect(r)} style={{ width:"100%", background:c, color:"#fff", border:"none", borderRadius:12, padding:"14px", fontSize:17, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>Cook this →</button>
+              <button onTouchStart={() => onSelect(r)} onClick={() => onSelect(r)} style={btn({ width:"100%", background:c, color:"#fff", borderRadius:12, padding:"14px", fontSize:17 })}>Cook this →</button>
             </div>
           );
         })}
       </div>
-      <button onClick={onBack} style={{ background:"#fff", border:"1.5px solid "+ZEN.border, color:ZEN.muted, borderRadius:12, padding:"13px 32px", fontSize:16, fontFamily:"'DM Sans',sans-serif", cursor:"pointer" }}>← Back to ingredients</button>
-      <button onClick={onRestart} style={{ background:"none", border:"none", color:ZEN.faint, fontSize:14, fontFamily:"'DM Sans',sans-serif", cursor:"pointer", textDecoration:"underline" }}>Start over</button>
+      <button onClick={onBack} style={{ background:"#fff", border:"1.5px solid "+ZEN.border, color:ZEN.muted, borderRadius:12, padding:"13px 32px", fontSize:16, fontFamily:SANS, cursor:"pointer" }}>← Back to ingredients</button>
+      <button onClick={onRestart} style={{ background:"none", border:"none", color:ZEN.faint, fontSize:14, fontFamily:SANS, cursor:"pointer", textDecoration:"underline" }}>Start over</button>
+      </div>
     </div>
   );
 }
@@ -445,23 +495,45 @@ function RecipesScreen({ recipes, onBack, onRestart, onSelect }) {
 /* ══════════════════════════════════════════════════════════
    SHOPPING LIST SCREEN
 ══════════════════════════════════════════════════════════ */
-function ShoppingListScreen({ recipe, onCook, onBack, servings }) {
+function ShoppingListScreen({ recipe, onCook, onBack, servings, onAddToPantry, header, extras, onAddExtras, onRemoveExtra }) {
   const [checked, setChecked] = useState(new Set());
   const [showShare, setShowShare] = useState(false);
+  const [stashed, setStashed] = useState(null);
+  const [draft, setDraft] = useState("");
   function toggle(i) { setChecked(s => { const n = new Set(s); n.has(i) ? n.delete(i) : n.add(i); return n; }); }
+
+  async function addExtras(e) {
+    e?.preventDefault();
+    if (!draft.trim()) return;
+    await onAddExtras(draft);
+    setDraft("");
+  }
   const total = recipe.shoppingList?.length || 0;
   const done = checked.size;
 
+  // Checking things off already means "I have this", so reuse that as the
+  // signal for what to file into the pantry. Quantities are stripped first.
+  async function stash(kind) {
+    const names = [...checked]
+      .map(i => ingredientName(recipe.shoppingList[i]))
+      .filter(Boolean);
+    if (!names.length) return;
+    const res = await onAddToPantry(kind, names);
+    setStashed({ kind, count: res.added.length, skipped: res.duplicates.length + res.similar.length });
+    setChecked(new Set());
+  }
+
   return (
-    <div style={{ minHeight:"100vh", background:ZEN.bg, display:"flex", flexDirection:"column", alignItems:"center", padding:"48px 24px 100px", fontFamily:"'DM Sans',sans-serif" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;600&family=DM+Sans:wght@400;500&display=swap');*{box-sizing:border-box;}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}`}</style>
+    <div style={{ minHeight:"100vh", background:ZEN.bg, fontFamily:SANS }}>
+      {header}
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"28px 24px 100px" }}>
       <div style={{ width:"100%", maxWidth:480 }}>
-        <button onClick={onBack} style={{ background:"none", border:"none", color:ZEN.muted, fontFamily:"'DM Sans',sans-serif", fontSize:15, cursor:"pointer", marginBottom:24, padding:0 }}>← Back to recipes</button>
+        <button onClick={onBack} style={{ background:"none", border:"none", color:ZEN.muted, fontFamily:SANS, fontSize:15, cursor:"pointer", marginBottom:24, padding:0 }}>← Back to recipes</button>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
           <p style={{ fontSize:13, letterSpacing:"2px", color:ZEN.muted, textTransform:"uppercase" }}>Shopping list</p>
-          <button onTouchStart={() => setShowShare(true)} onClick={() => setShowShare(true)} style={{ background:"none", border:"1.5px solid "+ZEN.border, borderRadius:8, padding:"5px 12px", fontSize:13, color:ZEN.muted, fontFamily:"'DM Sans',sans-serif", cursor:"pointer", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>↑ Save / Share</button>
+          <button onTouchStart={() => setShowShare(true)} onClick={() => setShowShare(true)} style={{ background:"none", border:"1.5px solid "+ZEN.border, borderRadius:8, padding:"5px 12px", fontSize:13, color:ZEN.muted, fontFamily:SANS, cursor:"pointer", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>↑ Save / Share</button>
         </div>
-        <h1 style={{ fontFamily:"'Lora',serif", fontSize:28, fontWeight:400, color:ZEN.text, lineHeight:1.3, marginBottom:6 }}>{recipe.name}</h1>
+        <h1 style={{ fontFamily:SERIF, fontSize:28, fontWeight:400, color:ZEN.text, lineHeight:1.3, marginBottom:6 }}>{recipe.name}</h1>
         <p style={{ fontSize:15, color:ZEN.muted, marginBottom:24 }}>{done === total && total > 0 ? "All good to go ✓" : done + " of " + total + " checked"}</p>
         <div style={{ width:"100%", height:4, background:ZEN.surface, borderRadius:2, marginBottom:28, overflow:"hidden" }}>
           <div style={{ height:"100%", borderRadius:2, background:"#3D6E52", width:total>0?(done/total*100)+"%":"0%", transition:"width 0.3s" }} />
@@ -479,10 +551,53 @@ function ShoppingListScreen({ recipe, onCook, onBack, servings }) {
             );
           })}
         </div>
+        {/* Your own running errands list — persists between recipes, since
+            "we're out of milk" has nothing to do with tonight's dinner. */}
+        <div style={{ marginTop:30, borderTop:"1px solid "+ZEN.border, paddingTop:22 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:10 }}>
+            <span style={{ fontSize:13, letterSpacing:"2px", color:ZEN.muted, textTransform:"uppercase" }}>Also need</span>
+            <span style={{ fontSize:12, color:ZEN.faint, fontStyle:"italic" }}>your own list</span>
+          </div>
+          <form onSubmit={addExtras} style={{ display:"flex", gap:8, marginBottom:extras.length?14:0 }}>
+            <input value={draft} onChange={e => setDraft(e.target.value)} maxLength={400}
+              placeholder="milk, paper towels, coffee…"
+              style={{ flex:1, padding:"12px 14px", border:"1.5px solid "+ZEN.border, borderRadius:10, background:"#fff", color:ZEN.text, fontFamily:SANS, fontSize:16, outline:"none" }} />
+            <button type="submit" disabled={!draft.trim()}
+              style={btn({ background:draft.trim()?"#3D6E52":ZEN.border, color:draft.trim()?"#fff":ZEN.muted, borderRadius:10, padding:"12px 20px", fontSize:16, cursor:draft.trim()?"pointer":"default" })}>Add</button>
+          </form>
+          {extras.map(item => (
+            <div key={item.name} style={{ display:"flex", alignItems:"center", gap:16, padding:"13px 0", borderBottom:"1px solid "+ZEN.surface }}>
+              <button onClick={() => onRemoveExtra(item.name)} aria-label={"Got " + item.name}
+                style={{ width:26, height:26, borderRadius:6, flexShrink:0, background:"#fff", border:"2px solid "+ZEN.border, cursor:"pointer", padding:0 }} />
+              <span style={{ flex:1, fontSize:18, color:ZEN.text }}>{item.name}</span>
+              <button onClick={() => onRemoveExtra(item.name)} aria-label={"Remove " + item.name}
+                style={{ background:"none", border:"none", color:ZEN.faint, fontSize:16, cursor:"pointer", padding:"0 4px" }}>✕</button>
+            </div>
+          ))}
+          {extras.length > 0 && <p style={{ fontSize:12, color:ZEN.faint, marginTop:10 }}>Tick or ✕ to clear an item once you've got it.</p>}
+        </div>
+
+        {/* Filing bought items into the pantry keeps it current without a separate chore. */}
+        {done > 0 && (
+          <div style={{ marginTop:24, background:"#fff", border:"1.5px solid "+ZEN.border, borderRadius:14, padding:"16px 18px", display:"flex", flexDirection:"column", gap:10 }}>
+            <span style={{ fontSize:14, color:ZEN.text, fontFamily:SANS }}>Add the {done} checked item{done === 1 ? "" : "s"} to your pantry?</span>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+              <button onClick={() => stash(KINDS.STAPLE)} style={btn({ background:"#7A5C2E", color:"#fff", borderRadius:8, padding:"9px 14px", fontSize:14 })}>🧂 As staples</button>
+              <button onClick={() => stash(KINDS.USE_SOON)} style={btn({ background:"#8B4A3A", color:"#fff", borderRadius:8, padding:"9px 14px", fontSize:14 })}>⏳ Use up soon</button>
+            </div>
+          </div>
+        )}
+        {stashed && (
+          <p style={{ marginTop:14, fontSize:14, color:"#3D6E52", fontFamily:SANS }}>
+            ✓ Added {stashed.count} to {stashed.kind === KINDS.STAPLE ? "staples" : "use up soon"}
+            {stashed.skipped > 0 ? " (" + stashed.skipped + " already there)" : ""}
+          </p>
+        )}
+      </div>
       </div>
       {showShare && <ShareModal title={recipe.name + " — Shopping List"} text={buildShoppingText(recipe, servings)} onClose={() => setShowShare(false)} />}
       <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"16px 24px 32px", background:"linear-gradient(to top, "+ZEN.bg+" 70%, transparent)", display:"flex", justifyContent:"center" }}>
-        <button onTouchStart={onCook} onClick={onCook} style={{ background:ZEN.text, color:"#fff", border:"none", borderRadius:14, padding:"16px 48px", fontSize:18, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", width:"100%", maxWidth:440, boxShadow:"0 4px 20px rgba(44,40,37,0.18)", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>Let's cook →</button>
+        <button onTouchStart={onCook} onClick={onCook} style={btn({ background:ZEN.text, color:"#fff", borderRadius:14, padding:"16px 48px", fontSize:18, width:"100%", maxWidth:440, boxShadow:"0 4px 20px rgba(44,40,37,0.18)" })}>Let's cook →</button>
       </div>
     </div>
   );
@@ -491,24 +606,29 @@ function ShoppingListScreen({ recipe, onCook, onBack, servings }) {
 /* ══════════════════════════════════════════════════════════
    RECIPE STEPS SCREEN
 ══════════════════════════════════════════════════════════ */
-function RecipeStepsScreen({ recipe, onBack, servings }) {
+function RecipeStepsScreen({ recipe, onBack, servings, saved, onToggleSave, header, onDone }) {
   const [doneSteps, setDoneSteps] = useState(new Set());
   const [showShare, setShowShare] = useState(false);
   function toggle(i) { setDoneSteps(s => { const n = new Set(s); n.has(i) ? n.delete(i) : n.add(i); return n; }); }
+  const allDone = (recipe.steps?.length || 0) > 0 && doneSteps.size === recipe.steps.length;
 
   return (
-    <div style={{ minHeight:"100vh", background:ZEN.bg, display:"flex", flexDirection:"column", alignItems:"center", padding:"48px 24px 80px", fontFamily:"'DM Sans',sans-serif" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;600&family=DM+Sans:wght@400;500&display=swap');*{box-sizing:border-box;}@keyframes fadeIn{from{opacity:0}to{opacity:1}}`}</style>
+    <div style={{ minHeight:"100vh", background:ZEN.bg, fontFamily:SANS }}>
+      {header}
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"28px 24px 80px" }}>
       <div style={{ width:"100%", maxWidth:480 }}>
-        <button onClick={onBack} style={{ background:"none", border:"none", color:ZEN.muted, fontFamily:"'DM Sans',sans-serif", fontSize:15, cursor:"pointer", marginBottom:24, padding:0 }}>← Back to shopping list</button>
+        <button onClick={onBack} style={{ background:"none", border:"none", color:ZEN.muted, fontFamily:SANS, fontSize:15, cursor:"pointer", marginBottom:24, padding:0 }}>← Back to shopping list</button>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
           <p style={{ fontSize:13, letterSpacing:"2px", color:ZEN.muted, textTransform:"uppercase" }}>How to make it</p>
-          <button onTouchStart={() => setShowShare(true)} onClick={() => setShowShare(true)} style={{ background:"none", border:"1.5px solid "+ZEN.border, borderRadius:8, padding:"5px 12px", fontSize:13, color:ZEN.muted, fontFamily:"'DM Sans',sans-serif", cursor:"pointer", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>↑ Save / Share</button>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={onToggleSave} aria-label={saved ? "Remove from favourites" : "Save to favourites"}
+              style={btn({ background:saved?"#8B4A3A":"none", border:"1.5px solid "+(saved?"#8B4A3A":ZEN.border), borderRadius:8, padding:"5px 12px", fontSize:13, color:saved?"#fff":ZEN.muted, fontWeight:400 })}>
+              {saved ? "♥ Saved" : "♡ Save"}
+            </button>
+            <button onTouchStart={() => setShowShare(true)} onClick={() => setShowShare(true)} style={{ background:"none", border:"1.5px solid "+ZEN.border, borderRadius:8, padding:"5px 12px", fontSize:13, color:ZEN.muted, fontFamily:SANS, cursor:"pointer", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>↑ Share</button>
+          </div>
         </div>
-        <h1 style={{ fontFamily:"'Lora',serif", fontSize:28, fontWeight:400, color:ZEN.text, lineHeight:1.3, marginBottom:6 }}>{recipe.name}</h1>
-        <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:28 }}>
-          {(recipe.tags||[]).map(tag => <span key={tag} style={{ fontSize:13, color:ZEN.muted, background:ZEN.surface, borderRadius:20, padding:"4px 12px" }}>{tag}</span>)}
-        </div>
+        <h1 style={{ fontFamily:SERIF, fontSize:28, fontWeight:400, color:ZEN.text, lineHeight:1.3, marginBottom:28 }}>{recipe.name}</h1>
         <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
           {recipe.steps?.map((step, i) => {
             const done = doneSteps.has(i);
@@ -520,6 +640,13 @@ function RecipeStepsScreen({ recipe, onBack, servings }) {
             );
           })}
         </div>
+          {/* Highlighted once every step is ticked, but always available —
+              nobody should be trapped here because they skipped a checkbox. */}
+          <button onClick={onDone}
+            style={btn({ marginTop:26, width:"100%", background:allDone?ZEN.text:"#fff", border:"1.5px solid "+(allDone?ZEN.text:ZEN.border), color:allDone?"#fff":ZEN.muted, borderRadius:14, padding:"16px", fontSize:17 })}>
+            {allDone ? "✓ All done — finish up →" : "I'm done cooking →"}
+          </button>
+        </div>
       </div>
       {showShare && <ShareModal title={recipe.name} text={buildRecipeText(recipe, servings)} onClose={() => setShowShare(false)} />}
     </div>
@@ -529,23 +656,23 @@ function RecipeStepsScreen({ recipe, onBack, servings }) {
 /* ══════════════════════════════════════════════════════════
    LOADING SCREEN
 ══════════════════════════════════════════════════════════ */
+const LOADING_MESSAGES = ["Spinning up your recipes…","Checking the pantry…","Consulting the chef…","Almost there…"];
+
 function LoadingScreen({ results, error }) {
   const [msgIdx, setMsgIdx] = useState(0);
-  const messages = ["Spinning up your recipes…","Checking the pantry…","Consulting the chef…","Almost there…"];
-  useEffect(() => { const id = setInterval(() => setMsgIdx(i => (i+1) % messages.length), 1800); return () => clearInterval(id); }, []);
+  useEffect(() => { const id = setInterval(() => setMsgIdx(i => (i+1) % LOADING_MESSAGES.length), 1800); return () => clearInterval(id); }, []);
   return (
-    <div style={{ minHeight:"100vh", background:ZEN.bg, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 28px", gap:28, fontFamily:"'DM Sans',sans-serif" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;600&family=DM+Sans:wght@400;500&display=swap');*{box-sizing:border-box;margin:0;padding:0;}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}@keyframes bounce{from{transform:translateY(0)}to{transform:translateY(-8px)}}@keyframes pillPop{from{opacity:0;transform:scale(0.88) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}`}</style>
+    <div style={{ minHeight:"100vh", background:ZEN.bg, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 28px", gap:28, fontFamily:SANS }}>
       <div style={{ fontSize:72, animation:"spin 2.4s linear infinite", lineHeight:1 }}>🍽️</div>
       <div style={{ display:"flex", gap:10, flexWrap:"wrap", justifyContent:"center", maxWidth:360 }}>
         {STEPS.map((s, i) => results[s.key] ? (
           <div key={s.key} style={{ background:"#fff", border:"2px solid "+s.color+"44", borderRadius:50, padding:"10px 18px", display:"flex", alignItems:"center", gap:8, animation:"pillPop 0.4s ease "+(i*0.1)+"s both" }}>
             <span style={{ fontSize:18 }}>{s.emoji}</span>
-            <span style={{ fontFamily:"'Lora',serif", fontSize:16, color:ZEN.text }}>{results[s.key]}</span>
+            <span style={{ fontFamily:SERIF, fontSize:16, color:ZEN.text }}>{results[s.key]}</span>
           </div>
         ) : null)}
       </div>
-      <p style={{ fontSize:18, color:ZEN.muted, textAlign:"center", fontStyle:"italic" }}>{messages[msgIdx]}</p>
+      <p style={{ fontSize:18, color:ZEN.muted, textAlign:"center", fontStyle:"italic" }}>{LOADING_MESSAGES[msgIdx]}</p>
       <div style={{ display:"flex", gap:8 }}>
         {[0,1,2].map(i => <div key={i} style={{ width:8, height:8, borderRadius:"50%", background:ZEN.faint, animation:"bounce "+(0.6+i*0.15)+"s ease-in-out infinite alternate" }} />)}
       </div>
@@ -557,15 +684,327 @@ function LoadingScreen({ results, error }) {
 /* ══════════════════════════════════════════════════════════
    WELCOME SCREEN
 ══════════════════════════════════════════════════════════ */
-function WelcomeScreen({ onStart, onQuickPick }) {
+function WelcomeScreen({ onStart, onQuickPick, onPantry, pantryCount, onFavorites, favoriteCount }) {
   return (
     <div style={{ minHeight:"100vh", background:ZEN.bg, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 28px", gap:0 }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;600&family=DM+Sans:wght@400;500&display=swap');*{box-sizing:border-box;margin:0;padding:0;}@keyframes fadeIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes gentleSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
       <div style={{ animation:"gentleSpin 18s linear infinite", fontSize:88, marginBottom:28, lineHeight:1 }}>🍽️</div>
-      <h1 style={{ fontFamily:"'Lora',serif", fontSize:42, fontWeight:400, color:ZEN.text, letterSpacing:2, marginBottom:12, textAlign:"center", animation:"fadeIn 0.6s ease" }}>Dinner Spinner</h1>
-      <p style={{ fontSize:17, color:ZEN.muted, fontFamily:"'DM Sans',sans-serif", marginBottom:48, textAlign:"center", lineHeight:1.6, animation:"fadeIn 0.7s ease" }}>Spin to discover tonight's meal</p>
-      <button onTouchStart={onStart} onClick={onStart} style={{ background:"#8B4A3A", color:"#fff", border:"none", borderRadius:50, padding:"20px 64px", fontSize:21, fontFamily:"'DM Sans',sans-serif", fontWeight:500, cursor:"pointer", boxShadow:"0 6px 32px rgba(139,74,58,0.35)", animation:"fadeIn 0.9s ease", WebkitTapHighlightColor:"transparent", touchAction:"manipulation", marginBottom:16 }}>Let's get cookin' 🔥</button>
-      <button onTouchStart={onQuickPick} onClick={onQuickPick} style={{ background:"transparent", color:ZEN.muted, border:"1.5px solid "+ZEN.border, borderRadius:50, padding:"14px 40px", fontSize:16, fontFamily:"'DM Sans',sans-serif", fontWeight:400, cursor:"pointer", animation:"fadeIn 1.1s ease", WebkitTapHighlightColor:"transparent", touchAction:"manipulation" }}>🎲 Surprise me</button>
+      <h1 style={{ fontFamily:SERIF, fontSize:42, fontWeight:400, color:ZEN.text, letterSpacing:2, marginBottom:12, textAlign:"center", animation:"fadeIn 0.6s ease" }}>Dinner Spinner</h1>
+      <p style={{ fontSize:17, color:ZEN.muted, fontFamily:SANS, marginBottom:48, textAlign:"center", lineHeight:1.6, animation:"fadeIn 0.7s ease" }}>Spin to discover tonight's meal</p>
+      <button onTouchStart={onStart} onClick={onStart} style={btn({ background:"#8B4A3A", color:"#fff", borderRadius:50, padding:"20px 64px", fontSize:21, boxShadow:"0 6px 32px rgba(139,74,58,0.35)", animation:"fadeIn 0.9s ease", marginBottom:16 })}>Let's get cookin' 🔥</button>
+      <button onTouchStart={onQuickPick} onClick={onQuickPick} style={btn({ background:"transparent", color:ZEN.muted, border:"1.5px solid "+ZEN.border, borderRadius:50, padding:"14px 40px", fontSize:16, fontWeight:400, animation:"fadeIn 1.1s ease", marginBottom:14 })}>🎲 Surprise me</button>
+      <div style={{ display:"flex", gap:6, animation:"fadeIn 1.3s ease" }}>
+        <button onTouchStart={onPantry} onClick={onPantry} style={btn({ background:"none", color:ZEN.faint, borderRadius:50, padding:"8px 14px", fontSize:15, fontWeight:400 })}>
+          🥫 My pantry{pantryCount ? " (" + pantryCount + ")" : ""}
+        </button>
+        <button onTouchStart={onFavorites} onClick={onFavorites} style={btn({ background:"none", color:ZEN.faint, borderRadius:50, padding:"8px 14px", fontSize:15, fontWeight:400 })}>
+          ♥ Saved{favoriteCount ? " (" + favoriteCount + ")" : ""}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════
+   CONFIRM MODAL
+══════════════════════════════════════════════════════════ */
+/* Guards anything that throws away the current session. Uses the app's own
+   styling rather than window.confirm, which looks foreign and can't be themed. */
+function ConfirmModal({ title, body, confirmLabel, onConfirm, onClose }) {
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(44,40,37,0.6)", display:"flex", alignItems:"center", justifyContent:"center", padding:24, zIndex:400 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background:ZEN.bg, borderRadius:18, padding:"26px 24px", width:"100%", maxWidth:380, display:"flex", flexDirection:"column", gap:14, animation:"fadeIn 0.2s ease", boxShadow:"0 12px 40px rgba(44,40,37,0.3)" }}>
+        <h3 style={{ fontFamily:SERIF, fontSize:21, fontWeight:400, color:ZEN.text }}>{title}</h3>
+        <p style={{ fontFamily:SANS, fontSize:15, color:ZEN.muted, lineHeight:1.6, margin:0 }}>{body}</p>
+        <div style={{ display:"flex", gap:10, marginTop:6 }}>
+          <button onClick={onClose} style={btn({ flex:1, background:"#fff", border:"1.5px solid "+ZEN.border, color:ZEN.text, borderRadius:12, padding:"13px", fontSize:16 })}>Stay here</button>
+          <button onClick={onConfirm} style={btn({ flex:1, background:"#8B4A3A", color:"#fff", borderRadius:12, padding:"13px", fontSize:16 })}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════
+   DONE SCREEN
+══════════════════════════════════════════════════════════ */
+/* Closes the loop after cooking: capture a verdict (which steers future
+   suggestions), offer to save it, and file leftovers — then head home. */
+function DoneScreen({ recipe, saved, onToggleSave, onFinish, onLeftovers, header }) {
+  const [rating, setRating] = useState(null);
+  const [note, setNote] = useState("");
+  const [leftovers, setLeftovers] = useState("");
+  const [filed, setFiled] = useState(false);
+
+  async function fileLeftovers() {
+    const res = await onLeftovers(leftovers);
+    if (res?.added.length) { setFiled(true); setLeftovers(""); }
+  }
+
+  return (
+    <div style={{ minHeight:"100vh", background:ZEN.bg, fontFamily:SANS }}>
+      {header}
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"36px 24px 110px" }}>
+        <div style={{ width:"100%", maxWidth:460, display:"flex", flexDirection:"column", gap:26 }}>
+
+          <div style={{ textAlign:"center" }}>
+            <div style={{ fontSize:56, lineHeight:1, marginBottom:12 }}>🍽️</div>
+            <p style={{ fontSize:13, letterSpacing:"2px", color:ZEN.muted, textTransform:"uppercase", marginBottom:8 }}>Nicely done</p>
+            <h1 style={{ fontFamily:SERIF, fontSize:28, fontWeight:400, color:ZEN.text, lineHeight:1.3 }}>{recipe?.name}</h1>
+          </div>
+
+          <div>
+            <div style={{ fontSize:15, color:ZEN.text, marginBottom:10 }}>How was it?</div>
+            <div style={{ display:"flex", gap:8 }}>
+              {RATING_OPTIONS.map(o => {
+                const on = rating === o.key;
+                return (
+                  <button key={o.key} onClick={() => setRating(o.key)}
+                    style={btn({ flex:1, background:on?o.color:"#fff", border:"1.5px solid "+(on?o.color:ZEN.border), color:on?"#fff":ZEN.text, borderRadius:12, padding:"12px 6px", fontSize:14 })}>
+                    <div style={{ fontSize:24, marginBottom:4 }}>{o.icon}</div>
+                    {o.label}
+                    <div style={{ fontSize:11, marginTop:3, opacity:0.75, fontWeight:400 }}>{o.hint}</div>
+                  </button>
+                );
+              })}
+            </div>
+            <p style={{ fontSize:12, color:ZEN.faint, marginTop:8, lineHeight:1.5 }}>
+              Used to shape future suggestions — loved dishes nudge the style, disliked ones get avoided.
+            </p>
+          </div>
+
+          {rating && (
+            <div style={{ animation:"fadeIn 0.3s ease" }}>
+              <label style={{ fontSize:14, color:ZEN.muted, display:"block", marginBottom:6 }}>Anything to remember for next time?</label>
+              <input value={note} onChange={e => setNote(e.target.value)} maxLength={200}
+                placeholder="too salty, halve the chilli, great for guests…"
+                style={{ width:"100%", padding:"12px 14px", border:"1.5px solid "+ZEN.border, borderRadius:10, background:"#fff", color:ZEN.text, fontFamily:SANS, fontSize:15, outline:"none" }} />
+            </div>
+          )}
+
+          <div style={{ borderTop:"1px solid "+ZEN.border, paddingTop:22, display:"flex", flexDirection:"column", gap:16 }}>
+            <button onClick={onToggleSave}
+              style={btn({ background:saved?"#8B4A3A":"#fff", border:"1.5px solid "+(saved?"#8B4A3A":ZEN.border), color:saved?"#fff":ZEN.text, borderRadius:12, padding:"13px", fontSize:16 })}>
+              {saved ? "♥ Saved to your recipes" : "♡ Save this recipe"}
+            </button>
+
+            <div>
+              <label style={{ fontSize:14, color:ZEN.muted, display:"block", marginBottom:6 }}>Leftover ingredients to use up?</label>
+              <div style={{ display:"flex", gap:8 }}>
+                <input value={leftovers} onChange={e => { setLeftovers(e.target.value); setFiled(false); }} maxLength={400}
+                  placeholder="half the cabbage, sour cream…"
+                  style={{ flex:1, padding:"12px 14px", border:"1.5px solid "+ZEN.border, borderRadius:10, background:"#fff", color:ZEN.text, fontFamily:SANS, fontSize:15, outline:"none" }} />
+                <button onClick={fileLeftovers} disabled={!leftovers.trim()}
+                  style={btn({ background:leftovers.trim()?"#8B4A3A":ZEN.border, color:leftovers.trim()?"#fff":ZEN.muted, borderRadius:10, padding:"12px 18px", fontSize:15, cursor:leftovers.trim()?"pointer":"default" })}>Add</button>
+              </div>
+              {filed && <p style={{ fontSize:13, color:"#3D6E52", marginTop:8 }}>✓ Added to “use up soon”</p>}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ position:"fixed", bottom:0, left:0, right:0, padding:"16px 24px 32px", background:"linear-gradient(to top, "+ZEN.bg+" 70%, transparent)", display:"flex", justifyContent:"center", zIndex:50 }}>
+        <button onClick={() => onFinish(rating, note)}
+          style={btn({ background:ZEN.text, color:"#fff", borderRadius:14, padding:"17px", fontSize:18, width:"100%", maxWidth:440, boxShadow:"0 4px 20px rgba(44,40,37,0.18)" })}>
+          {rating ? "Save & finish →" : "Finish →"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════
+   APP HEADER
+══════════════════════════════════════════════════════════ */
+/* Slim persistent bar. Pantry and favourites open as overlays rather than
+   screens so opening one never loses the recipe you're cooking. Deliberately
+   not shown on the welcome or spin screens — those are focused sequences. */
+function AppHeader({ onHome, onPantry, pantryCount, onFavorites, favoriteCount, onIngredients }) {
+  const icon = extra => btn({ background:"none", color:ZEN.muted, borderRadius:8, padding:"7px 10px", fontSize:14, fontWeight:400, whiteSpace:"nowrap", ...extra });
+  return (
+    <div style={{ position:"sticky", top:0, zIndex:40, background:ZEN.bg, borderBottom:"1px solid "+ZEN.border,
+                  display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"10px 14px" }}>
+      <button onClick={onHome} title="Start over"
+        style={btn({ display:"flex", alignItems:"center", gap:7, background:"none", fontFamily:SERIF, fontSize:16, color:ZEN.text, whiteSpace:"nowrap", padding:"4px 2px" })}>
+        <span style={{ fontSize:18 }}>🍽️</span> Dinner Spinner
+      </button>
+      <div style={{ display:"flex", alignItems:"center", gap:2 }}>
+        {onIngredients && <button onClick={onIngredients} style={icon()}>✎ Ingredients</button>}
+        <button onClick={onPantry} style={icon()}>🥫{pantryCount ? " " + pantryCount : ""}</button>
+        <button onClick={onFavorites} style={icon()}>♥{favoriteCount ? " " + favoriteCount : ""}</button>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════
+   FAVOURITES MODAL
+══════════════════════════════════════════════════════════ */
+function FavoritesModal({ favorites, onClose, onOpen, onRemove }) {
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(44,40,37,0.6)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:300 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background:ZEN.bg, borderRadius:"24px 24px 0 0", padding:"26px 24px 40px", width:"100%", maxWidth:520, maxHeight:"88vh", display:"flex", flexDirection:"column", gap:16, animation:"slideUp 0.3s ease" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:24 }}>♥</span>
+            <span style={{ fontFamily:SERIF, fontSize:22, color:ZEN.text }}>Saved recipes</span>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", fontSize:22, color:ZEN.muted, cursor:"pointer" }}>✕</button>
+        </div>
+
+        <div style={{ flex:1, overflowY:"auto", minHeight:100 }}>
+          {favorites.length === 0 ? (
+            <p style={{ fontSize:15, color:ZEN.faint, fontFamily:SANS, fontStyle:"italic", textAlign:"center", padding:"36px 16px", lineHeight:1.6 }}>
+              Nothing saved yet. Tap ♡ Save on any recipe you want to keep.
+            </p>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+              {favorites.map((f, i) => (
+                <div key={(f.recipe?.name || "") + i} style={{ background:"#fff", border:"1.5px solid "+ZEN.border, borderLeft:"5px solid #8B4A3A", borderRadius:14, padding:"16px 18px" }}>
+                  <div style={{ fontSize:19, fontFamily:SERIF, color:ZEN.text, lineHeight:1.3, marginBottom:6 }}>{f.recipe?.name}</div>
+                  <div style={{ fontSize:14, color:ZEN.muted, fontFamily:SANS, lineHeight:1.6, marginBottom:12 }}>{f.recipe?.description}</div>
+                  <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                    <button onClick={() => onOpen(f)} style={btn({ background:"#8B4A3A", color:"#fff", borderRadius:10, padding:"9px 16px", fontSize:14 })}>Cook this →</button>
+                    <button onClick={() => onRemove(f.recipe)} style={btn({ background:"none", color:ZEN.muted, border:"1.5px solid "+ZEN.border, borderRadius:10, padding:"9px 14px", fontSize:14, fontWeight:400 })}>Remove</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════
+   PANTRY MODAL
+══════════════════════════════════════════════════════════ */
+const PANTRY_TABS = [
+  { kind: KINDS.STAPLE, listKey: "staples", label: "Staples", emoji: "🧂", color: "#7A5C2E",
+    blurb: "Always in your kitchen. Recipes use these freely and leave them off the shopping list.",
+    placeholder: "soy sauce, olive oil, cumin…" },
+  { kind: KINDS.USE_SOON, listKey: "useSoon", label: "Use up soon", emoji: "⏳", color: "#8B4A3A",
+    blurb: "Recipes will try to work these in where they fit.",
+    placeholder: "half tin coconut milk, cilantro…" },
+];
+
+function PantryModal({ pantry, setPantry, onClose }) {
+  const [tab, setTab] = useState(KINDS.STAPLE);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null); // { added, duplicates, similar }
+  const active = PANTRY_TABS.find(t => t.kind === tab);
+  const items = pantry[active.listKey] || [];
+  const stale = staleItems(pantry);
+
+  async function handleAdd(e, { force = false } = {}) {
+    e?.preventDefault();
+    const text = draft.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    try {
+      const res = await addItems(tab, text, { force });
+      setPantry(res.pantry);
+      // Keep any typo-suspects in the box so they can be corrected in place;
+      // clear everything else since it landed.
+      setDraft(res.similar.length && !force ? res.similar.map(s => s.name).join(", ") : "");
+      setNotice(res.added.length || res.duplicates.length || res.similar.length ? res : null);
+    } finally { setBusy(false); }
+  }
+
+  async function handleRemove(name) {
+    setNotice(null);
+    setPantry(await removeItems(tab, name));
+  }
+
+  async function clearStale() {
+    setNotice(null);
+    setPantry(await removeItems(KINDS.USE_SOON, stale.map(i => i.name)));
+  }
+
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(44,40,37,0.6)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:300 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background:ZEN.bg, borderRadius:"24px 24px 0 0", padding:"26px 24px 40px", width:"100%", maxWidth:520, maxHeight:"88vh", display:"flex", flexDirection:"column", gap:16, animation:"slideUp 0.3s ease" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:26 }}>🥫</span>
+            <span style={{ fontFamily:SERIF, fontSize:22, color:ZEN.text }}>My pantry</span>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", fontSize:22, color:ZEN.muted, cursor:"pointer" }}>✕</button>
+        </div>
+
+        <div style={{ display:"flex", gap:8 }}>
+          {PANTRY_TABS.map(t => {
+            const on = tab === t.kind;
+            const count = (pantry[t.listKey] || []).length;
+            return (
+              <button key={t.kind} onClick={() => setTab(t.kind)} style={btn({ flex:1, padding:"10px", borderRadius:10, background:on?t.color:ZEN.surface, color:on?"#fff":ZEN.muted, fontSize:15 })}>
+                {t.emoji} {t.label}{count ? " (" + count + ")" : ""}
+              </button>
+            );
+          })}
+        </div>
+
+        <p style={{ fontSize:14, color:ZEN.muted, fontFamily:SANS, lineHeight:1.5, margin:0 }}>{active.blurb}</p>
+
+        <form onSubmit={handleAdd} style={{ display:"flex", gap:8 }}>
+          <input value={draft} onChange={e => { setDraft(e.target.value); setNotice(null); }} placeholder={active.placeholder} maxLength={400}
+            style={{ flex:1, padding:"12px 14px", border:"1.5px solid "+ZEN.border, borderRadius:10, background:"#fff", color:ZEN.text, fontFamily:SANS, fontSize:16, outline:"none" }} />
+          <button type="submit" disabled={!draft.trim() || busy}
+            style={btn({ background:draft.trim()?active.color:ZEN.border, color:draft.trim()?"#fff":ZEN.muted, borderRadius:10, padding:"12px 20px", fontSize:16, cursor:draft.trim()?"pointer":"default" })}>Add</button>
+        </form>
+        <p style={{ fontSize:12, color:ZEN.faint, fontFamily:SANS, margin:"-8px 0 0" }}>Separate several with commas.</p>
+
+        {notice && (
+          <div style={{ display:"flex", flexDirection:"column", gap:6, fontFamily:SANS, fontSize:13 }}>
+            {notice.added.length > 0 && <span style={{ color:"#3D6E52" }}>✓ Added {notice.added.join(", ")}</span>}
+            {notice.duplicates.length > 0 && <span style={{ color:ZEN.muted }}>Already in your pantry: {notice.duplicates.join(", ")}</span>}
+            {notice.similar.map(s => (
+              <span key={s.name} style={{ color:"#8B4A3A", display:"flex", flexWrap:"wrap", alignItems:"center", gap:6 }}>
+                “{s.name}” looks like a typo of “{s.to}”.
+                <button onClick={e => handleAdd(e, { force: true })}
+                  style={btn({ background:"none", color:"#8B4A3A", fontSize:13, padding:0, textDecoration:"underline" })}>Add it anyway</button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {tab === KINDS.USE_SOON && stale.length > 0 && (
+          <div style={{ background:"#F5EDE8", border:"1.5px solid #8B4A3A33", borderRadius:12, padding:"12px 14px", display:"flex", flexDirection:"column", gap:8 }}>
+            <span style={{ fontFamily:SANS, fontSize:13, color:ZEN.text, lineHeight:1.5 }}>
+              {stale.length} item{stale.length === 1 ? "" : "s"} {stale.length === 1 ? "has" : "have"} been here over {STALE_DAYS} days. Still have {stale.length === 1 ? "it" : "them"}?
+            </span>
+            <button onClick={clearStale} style={btn({ background:"#8B4A3A", color:"#fff", borderRadius:8, padding:"8px 14px", fontSize:13, alignSelf:"flex-start" })}>
+              Clear {stale.length === 1 ? "it" : "them"}
+            </button>
+          </div>
+        )}
+
+        <div style={{ flex:1, overflowY:"auto", minHeight:80 }}>
+          {items.length === 0 ? (
+            <p style={{ fontSize:15, color:ZEN.faint, fontFamily:SANS, textAlign:"center", padding:"24px 0", fontStyle:"italic" }}>Nothing here yet.</p>
+          ) : (
+            <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+              {items.map(item => {
+                const age = tab === KINDS.USE_SOON ? daysSince(item.addedAt) : null;
+                const old = age !== null && age >= STALE_DAYS;
+                return (
+                  <span key={item.name} style={{ display:"inline-flex", alignItems:"center", gap:6, background:"#fff", border:"1.5px solid "+(old?"#8B4A3A55":ZEN.border), borderRadius:20, padding:"7px 8px 7px 14px", fontFamily:SANS, fontSize:15, color:ZEN.text }}>
+                    {item.name}
+                    {age !== null && <span style={{ fontSize:12, color:old?"#8B4A3A":ZEN.faint }}>{age === 0 ? "today" : age + "d"}</span>}
+                    <button onClick={() => handleRemove(item.name)} aria-label={"Remove " + item.name}
+                      style={{ background:"none", border:"none", color:ZEN.faint, fontSize:16, cursor:"pointer", lineHeight:1, padding:"0 4px" }}>✕</button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <p style={{ fontSize:12, color:ZEN.faint, fontFamily:SANS, textAlign:"center", margin:0 }}>
+          {syncEnabled ? "☁️ Synced across your devices" : "💾 Saved on this device only"}
+        </p>
+      </div>
     </div>
   );
 }
@@ -581,7 +1020,49 @@ export default function App() {
   const [lastServings, setLastServings] = useState(2);
   const [error, setError] = useState(null);
   const [activeRecipe, setActiveRecipe] = useState(null);
+  const [pantry, setPantry] = useState(EMPTY_PANTRY);
+  const [history, setHistory] = useState(() => loadHistory());
+  const [showPantry, setShowPantry] = useState(false);
+  const [showFavorites, setShowFavorites] = useState(false);
+  const [confirmHome, setConfirmHome] = useState(false);
+  const [favorites, setFavorites] = useState([]);
+  // Held here rather than in SummaryScreen so leaving and returning keeps them.
+  const [prefs, setPrefs] = useState(() => {
+    const saved = readPrefs();
+    return {
+      toppings: "",
+      diff: DIFF.some(d => d.key === saved.diff) ? saved.diff : "medium",
+      servings: Number(saved.servings) >= 1 && Number(saved.servings) <= 8 ? Number(saved.servings) : 2,
+    };
+  });
   const latestResultsRef = useRef({});
+
+  // Load once on startup. Neither loader rejects — both fall back to the local
+  // copy if Supabase is unreachable — so no error branch is needed here.
+  useEffect(() => {
+    loadPantry().then(setPantry);
+    loadFavorites().then(setFavorites);
+  }, []);
+
+  // Shared by the pantry modal and the shopping list's "add to pantry" action.
+  async function handleAddToPantry(kind, names) {
+    const res = await addItems(kind, names);
+    setPantry(res.pantry);
+    return res;
+  }
+
+  // Ends the cooking session: store the verdict, then reset to the welcome screen.
+  function finishCooking(rating, note) {
+    if (rating) setHistory(recordCook({ recipe: activeRecipe, rating, note, results }));
+    restart();
+  }
+
+  async function toggleSaveRecipe() {
+    if (!activeRecipe) return;
+    setFavorites(isFavorite(favorites, activeRecipe)
+      ? await removeFavorite(activeRecipe)
+      : await saveFavorite(activeRecipe, lastServings));
+  }
 
   function handleStepDone(value) {
     const key = STEPS[stepIdx].key;
@@ -602,11 +1083,15 @@ export default function App() {
     setScreen("loading");
     try {
       const diffLabel = DIFF.find(d => d.key === diff)?.label || "Medium";
-      const parsed = await callGemini(buildPrompt(res, toppings, diffLabel, servings));
+      const parsed = await fetchRecipes({
+        results: res, toppings, diffLabel, servings,
+        pantry: pantryNames(pantry),
+        feedback: feedbackHints(history),
+      });
       setRecipes(parsed);
       setScreen("recipes");
     } catch (e) {
-      setError("Error: " + (e.message || "try again"));
+      setError(e.message || "Something went wrong — please try again.");
       setScreen("summary");
     }
   }
@@ -618,7 +1103,17 @@ export default function App() {
     setRecipes(null);
     setError(null);
     setActiveRecipe(null);
+    setConfirmHome(false);
+    setPrefs(p => ({ ...p, toppings: "" }));
     latestResultsRef.current = {};
+  }
+
+  /* Going home throws away the current spin, so ask first — unless there's
+     genuinely nothing to lose, where a prompt would just be noise. */
+  const hasSession = STEPS.some(s => results[s.key]) || Boolean(activeRecipe) || Boolean(recipes);
+  function requestHome() {
+    if (hasSession) setConfirmHome(true);
+    else restart();
   }
 
   function handleQuickPick() {
@@ -629,16 +1124,64 @@ export default function App() {
     setScreen("summary");
   }
 
-  if (screen === "welcome") return <WelcomeScreen onStart={() => setScreen("spin")} onQuickPick={handleQuickPick} />;
-  if (screen === "spin") return <SpinScreen key={stepIdx} step={STEPS[stepIdx]} stepIdx={stepIdx} total={STEPS.length} onDone={handleStepDone} />;
-  if (screen === "loading") return <LoadingScreen results={results} error={error} />;
-  if (screen === "summary") return (
+  const pantryCount = pantry.staples.length + pantry.useSoon.length;
+
+  // Only offer "Ingredients" once a spin has actually produced some.
+  const hasIngredients = STEPS.every(s => results[s.key]);
+  const header = (
+    <AppHeader
+      onHome={requestHome}
+      onPantry={() => setShowPantry(true)} pantryCount={pantryCount}
+      onFavorites={() => setShowFavorites(true)} favoriteCount={favorites.length}
+      onIngredients={hasIngredients && screen !== "summary" ? () => setScreen("summary") : null}
+    />
+  );
+
+  let view = null;
+  if (screen === "welcome") view = <WelcomeScreen onStart={() => setScreen("spin")} onQuickPick={handleQuickPick} onPantry={() => setShowPantry(true)} pantryCount={pantryCount} onFavorites={() => setShowFavorites(true)} favoriteCount={favorites.length} />;
+  else if (screen === "spin") view = <SpinScreen key={stepIdx} step={STEPS[stepIdx]} stepIdx={stepIdx} total={STEPS.length} onDone={handleStepDone} />;
+  else if (screen === "loading") view = <LoadingScreen results={results} error={error} />;
+  else if (screen === "summary") view = (
     <>
-      <SummaryScreen results={results} setResults={setResults} onGenerate={handleGenerate} />
-      {error && <div style={{ position:"fixed", bottom:24, left:"50%", transform:"translateX(-50%)", background:"#8B4A3A", color:"#fff", padding:"10px 20px", borderRadius:8, fontSize:15, fontFamily:"'DM Sans',sans-serif" }}>{error}</div>}
+      <SummaryScreen results={results} setResults={setResults} onGenerate={handleGenerate} onPantry={() => setShowPantry(true)} pantryCount={pantryCount} prefs={prefs} setPrefs={setPrefs} header={header} />
+      {/* Sits above the fixed "Get recipes" bar (zIndex 50) — otherwise the error is hidden behind it. */}
+      {error && <div style={{ position:"fixed", bottom:110, left:"50%", transform:"translateX(-50%)", zIndex:60, maxWidth:"90vw", textAlign:"center", background:"#8B4A3A", color:"#fff", padding:"10px 20px", borderRadius:8, fontSize:15, fontFamily:SANS, boxShadow:"0 4px 16px rgba(44,40,37,0.25)" }}>{error}</div>}
     </>
   );
-  if (screen === "recipes") return <RecipesScreen recipes={recipes} onBack={() => setScreen("summary")} onRestart={restart} onSelect={r => { setActiveRecipe(r); setScreen("shopping"); }} />;
-  if (screen === "shopping") return <ShoppingListScreen recipe={activeRecipe} onBack={() => setScreen("recipes")} onCook={() => setScreen("steps")} servings={lastServings} />;
-  if (screen === "steps") return <RecipeStepsScreen recipe={activeRecipe} onBack={() => setScreen("shopping")} servings={lastServings} />;
+  else if (screen === "recipes") view = <RecipesScreen recipes={recipes} onBack={() => setScreen("summary")} onRestart={requestHome} onSelect={r => { setActiveRecipe(r); setScreen("shopping"); }} header={header} />;
+  else if (screen === "shopping") view = (
+    <ShoppingListScreen recipe={activeRecipe} onBack={() => setScreen(recipes ? "recipes" : "welcome")} onCook={() => setScreen("steps")}
+      servings={lastServings} onAddToPantry={handleAddToPantry} header={header}
+      extras={pantry.shopping || []}
+      onAddExtras={text => handleAddToPantry(KINDS.SHOPPING, text)}
+      onRemoveExtra={async name => setPantry(await removeItems(KINDS.SHOPPING, name))} />
+  );
+  else if (screen === "steps") view = <RecipeStepsScreen recipe={activeRecipe} onBack={() => setScreen("shopping")} servings={lastServings} saved={isFavorite(favorites, activeRecipe)} onToggleSave={toggleSaveRecipe} header={header} onDone={() => setScreen("done")} />;
+  else if (screen === "done") view = (
+    <DoneScreen recipe={activeRecipe} saved={isFavorite(favorites, activeRecipe)} onToggleSave={toggleSaveRecipe}
+      onFinish={finishCooking} onLeftovers={text => handleAddToPantry(KINDS.USE_SOON, text)} header={header} />
+  );
+
+  return (
+    <>
+      <GlobalStyle />
+      {view}
+      {confirmHome && (
+        <ConfirmModal
+          title="Start over?"
+          body={activeRecipe && !isFavorite(favorites, activeRecipe)
+            ? "This clears tonight's ingredients and recipe. “" + activeRecipe.name + "” isn't saved — tap Stay here and hit ♥ Save first if you want to keep it."
+            : "This clears tonight's ingredients and recipes and takes you back to the start. Your pantry and saved recipes are kept."}
+          confirmLabel="Start over"
+          onConfirm={restart}
+          onClose={() => setConfirmHome(false)} />
+      )}
+      {showPantry && <PantryModal pantry={pantry} setPantry={setPantry} onClose={() => setShowPantry(false)} />}
+      {showFavorites && (
+        <FavoritesModal favorites={favorites} onClose={() => setShowFavorites(false)}
+          onRemove={async r => setFavorites(await removeFavorite(r))}
+          onOpen={f => { setActiveRecipe(f.recipe); setLastServings(f.servings || 2); setShowFavorites(false); setScreen("shopping"); }} />
+      )}
+    </>
+  );
 }
