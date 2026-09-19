@@ -60,13 +60,32 @@ locally using the same `api/_core.js`, so plain `npm run dev` works — you do
 ```bash
 npm run dev        # app + /api/recipes on http://localhost:5173
 npm run build      # production build (run before deploying to catch errors)
-vercel             # preview deploy (protected — only openable while logged into Vercel)
-vercel --prod      # deploy to gurtdinner.vercel.app
+vercel             # manual preview deploy (protected, only opens while logged into Vercel)
+vercel --prod      # manual production deploy; usually unnecessary, see Deploying
 vercel env ls      # check env vars
 ```
 
 Prompts print to the dev-server terminal on every generation (dev only), which is
 the fastest way to tune wording.
+
+## Deploying
+
+Vercel is connected to the GitHub repo, so deploys happen on push:
+
+- Push to `newbranch` and Vercel builds it and publishes to gurtdinner.vercel.app.
+- Push any other branch and you get a preview URL instead, protected and only
+  openable while logged into Vercel.
+
+Env vars live on the Vercel project, not in the repo, so `GEMINI_KEY` stays
+server-side exactly as before. Nothing about the key arrangement changes.
+
+Until 19 Sep 2026 Vercel's production branch was still pointed at `master`, left
+over from when that was GitHub's default. Pushes to `newbranch` did build, but
+were filed as previews, so the live site never moved and the integration looked
+dead. If pushes stop reaching the live site, check that setting first:
+Settings -> Environments -> Production -> Branch Tracking.
+
+`vercel --prod` still works as an escape hatch. Prefer pushing.
 
 ## Gotchas that cost real time
 
@@ -78,10 +97,16 @@ the fastest way to tune wording.
 - **Gemini free tier: 20 requests/minute** on `gemini-2.5-flash-lite`. Rapid
   testing exhausts it and the app shows a generic error. Space out test calls.
 - **`master` and `newbranch` have unrelated histories** and cannot be merged.
-  Current work is on `newbranch`, which is now GitHub's default branch. `master`
-  holds unrelated older commits. Don't try to merge them.
-- **Vercel deploys from the local folder, not GitHub.** There's no git
-  integration on the project — pushing to GitHub deploys nothing.
+  Current work is on `newbranch`, which is GitHub's default branch and Vercel's
+  production branch. `master` holds unrelated older commits. Don't try to merge
+  them.
+- **CLI deploys mislabel the commit.** `vercel --prod` uploads the local folder,
+  not the repo, but tags the deployment with whatever commit you happen to be
+  sitting on. So a deployment's listed SHA is not proof of what is actually live,
+  and uncommitted work can reach production under a commit that doesn't contain
+  it. The 27 July production deploy reads `12814d2` but carries the `74eee87`
+  server-side key work, which was committed afterwards. Push rather than deploy
+  from the folder and this stops being a problem.
 
 ## Prompt design (all in `api/_core.js`)
 
@@ -110,7 +135,9 @@ Decisions made deliberately — check before reverting:
   Both are visible in the browser bundle by design. Fine for a personal list;
   would need Supabase Auth to lock down.
 - No allergy / dietary restriction handling anywhere (user declined it).
-- Rename `newbranch` to something meaningful.
+- Rename `newbranch` to something meaningful. Two places need updating, not one:
+  GitHub's default branch and Vercel's production branch tracking. Changing only
+  the first would silently turn every deploy back into a preview.
 
 ## Communication preference
 
