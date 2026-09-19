@@ -72,7 +72,7 @@ the fastest way to tune wording.
 
 Vercel is connected to the GitHub repo, so deploys happen on push:
 
-- Push to `newbranch` and Vercel builds it and publishes to gurtdinner.vercel.app.
+- Push to `main` and Vercel builds it and publishes to gurtdinner.vercel.app.
 - Push any other branch and you get a preview URL instead, protected and only
   openable while logged into Vercel.
 
@@ -80,12 +80,26 @@ Env vars live on the Vercel project, not in the repo, so `GEMINI_KEY` stays
 server-side exactly as before. Nothing about the key arrangement changes.
 
 Until 19 Sep 2026 Vercel's production branch was still pointed at `master`, left
-over from when that was GitHub's default. Pushes to `newbranch` did build, but
-were filed as previews, so the live site never moved and the integration looked
-dead. If pushes stop reaching the live site, check that setting first:
-Settings -> Environments -> Production -> Branch Tracking.
+over from when that was GitHub's default. Pushes to the working branch did
+build, but were filed as previews, so the live site never moved and the
+integration looked dead. If pushes stop reaching the live site, check that
+setting first: Settings -> Environments -> Production -> Branch Tracking.
+Renaming a branch here means changing it in two places, GitHub and that
+setting, or every deploy silently becomes a preview again.
 
 `vercel --prod` still works as an escape hatch. Prefer pushing.
+
+## Branches
+
+- `main` — the live one. Vercel publishes whatever lands here.
+- `old` — a stale bookmark at `12814d2`, formerly called `master`. Nothing
+  depends on it.
+- Anything else is work in progress. Name it after the thing it does
+  (`grocery-list-button`, `fix-bom-in-env`), branch it off `main`, merge it back
+  when it works, then delete it. The commits live on in `main`; the branch was
+  only a label.
+
+Renamed from `newbranch` and `master` on 19 Sep 2026.
 
 ## Gotchas that cost real time
 
@@ -96,10 +110,12 @@ Settings -> Environments -> Production -> Branch Tracking.
   Check with `file .env` — it should say ASCII, not "with BOM".
 - **Gemini free tier: 20 requests/minute** on `gemini-2.5-flash-lite`. Rapid
   testing exhausts it and the app shows a generic error. Space out test calls.
-- **`master` and `newbranch` have unrelated histories** and cannot be merged.
-  Current work is on `newbranch`, which is GitHub's default branch and Vercel's
-  production branch. `master` holds unrelated older commits. Don't try to merge
-  them.
+- **`old` holds nothing unique.** Earlier notes here claimed `master` (now
+  `old`) had a history unrelated to the working branch and could not be merged.
+  That was wrong. Its only commit, `12814d2`, is the base of `main`'s history,
+  so `old` is just a stale bookmark sitting three commits back. It is kept
+  because deleting it gains nothing, not because it holds anything. Work happens
+  on `main`, which is GitHub's default branch and Vercel's production branch.
 - **CLI deploys mislabel the commit.** `vercel --prod` uploads the local folder,
   not the repo, but tags the deployment with whatever commit you happen to be
   sitting on. So a deployment's listed SHA is not proof of what is actually live,
@@ -135,9 +151,8 @@ Decisions made deliberately — check before reverting:
   Both are visible in the browser bundle by design. Fine for a personal list;
   would need Supabase Auth to lock down.
 - No allergy / dietary restriction handling anywhere (user declined it).
-- Rename `newbranch` to something meaningful. Two places need updating, not one:
-  GitHub's default branch and Vercel's production branch tracking. Changing only
-  the first would silently turn every deploy back into a preview.
+- Delete the `old` branch if you ever want the branch list tidy. Nothing depends
+  on it and it duplicates commits already in `main`.
 
 ## Communication preference
 
