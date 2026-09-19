@@ -493,21 +493,120 @@ function RecipesScreen({ recipes, onBack, onRestart, onSelect, header }) {
 }
 
 /* ══════════════════════════════════════════════════════════
+   GROCERY LIST
+══════════════════════════════════════════════════════════ */
+/* Your own errands list, independent of any recipe. Rendered in two places:
+   inside the recipe shopping list (as "Also need") and on its own from the
+   header, so "we're out of milk" doesn't require spinning up a dinner first.
+   One component so the two can't drift apart. */
+const GROCERY_COLOR = "#3D6E52";
+
+function GroceryList({ pantry, setPantry }) {
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null); // { added, duplicates, similar }
+  const items = pantry.shopping || [];
+
+  async function handleAdd(e, { force = false } = {}) {
+    e?.preventDefault();
+    const text = draft.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    try {
+      const res = await addItems(KINDS.SHOPPING, text, { force });
+      setPantry(res.pantry);
+      // Typo-suspects stay in the box so they can be fixed in place.
+      setDraft(res.similar.length && !force ? res.similar.map(x => x.name).join(", ") : "");
+      setNotice(res.added.length || res.duplicates.length || res.similar.length ? res : null);
+    } finally { setBusy(false); }
+  }
+
+  async function handleRemove(name) {
+    setNotice(null);
+    setPantry(await removeItems(KINDS.SHOPPING, name));
+  }
+
+  return (
+    <>
+      <form onSubmit={handleAdd} style={{ display:"flex", gap:8 }}>
+        <input value={draft} onChange={e => { setDraft(e.target.value); setNotice(null); }} maxLength={400}
+          placeholder="milk, paper towels, coffee…"
+          style={{ flex:1, padding:"12px 14px", border:"1.5px solid "+ZEN.border, borderRadius:10, background:"#fff", color:ZEN.text, fontFamily:SANS, fontSize:16, outline:"none" }} />
+        <button type="submit" disabled={!draft.trim() || busy}
+          style={btn({ background:draft.trim()?GROCERY_COLOR:ZEN.border, color:draft.trim()?"#fff":ZEN.muted, borderRadius:10, padding:"12px 20px", fontSize:16, cursor:draft.trim()?"pointer":"default" })}>Add</button>
+      </form>
+      <p style={{ fontSize:12, color:ZEN.faint, fontFamily:SANS, margin:"8px 0 0" }}>Separate several with commas.</p>
+
+      {notice && (
+        <div style={{ display:"flex", flexDirection:"column", gap:6, fontFamily:SANS, fontSize:13, marginTop:10 }}>
+          {notice.added.length > 0 && <span style={{ color:GROCERY_COLOR }}>✓ Added {notice.added.join(", ")}</span>}
+          {notice.duplicates.length > 0 && <span style={{ color:ZEN.muted }}>Already on your list: {notice.duplicates.join(", ")}</span>}
+          {notice.similar.map(x => (
+            <span key={x.name} style={{ color:"#8B4A3A", display:"flex", flexWrap:"wrap", alignItems:"center", gap:6 }}>
+              “{x.name}” looks like a typo of “{x.to}”.
+              <button onClick={e => handleAdd(e, { force: true })}
+                style={btn({ background:"none", color:"#8B4A3A", fontSize:13, padding:0, textDecoration:"underline" })}>Add it anyway</button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {items.map(item => (
+        <div key={item.name} style={{ display:"flex", alignItems:"center", gap:16, padding:"13px 0", borderBottom:"1px solid "+ZEN.surface }}>
+          <button onClick={() => handleRemove(item.name)} aria-label={"Got " + item.name}
+            style={{ width:26, height:26, borderRadius:6, flexShrink:0, background:"#fff", border:"2px solid "+ZEN.border, cursor:"pointer", padding:0 }} />
+          <span style={{ flex:1, fontSize:18, color:ZEN.text }}>{item.name}</span>
+          <button onClick={() => handleRemove(item.name)} aria-label={"Remove " + item.name}
+            style={{ background:"none", border:"none", color:ZEN.faint, fontSize:16, cursor:"pointer", padding:"0 4px" }}>✕</button>
+        </div>
+      ))}
+      {items.length > 0 && <p style={{ fontSize:12, color:ZEN.faint, marginTop:10 }}>Tick or ✕ to clear an item once you’ve got it.</p>}
+    </>
+  );
+}
+
+/* The same list on its own, reachable from the header and the welcome screen. */
+function GroceryModal({ pantry, setPantry, onClose }) {
+  const count = (pantry.shopping || []).length;
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(44,40,37,0.6)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:300 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background:ZEN.bg, borderRadius:"24px 24px 0 0", padding:"26px 24px 40px", width:"100%", maxWidth:520, maxHeight:"88vh", display:"flex", flexDirection:"column", gap:16, animation:"slideUp 0.3s ease" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:26 }}>🛒</span>
+            <span style={{ fontFamily:SERIF, fontSize:22, color:ZEN.text }}>Grocery list</span>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", fontSize:22, color:ZEN.muted, cursor:"pointer" }}>✕</button>
+        </div>
+
+        <p style={{ fontSize:14, color:ZEN.muted, fontFamily:SANS, lineHeight:1.5, margin:0 }}>
+          Anything you need from the shop. Nothing here has to be about dinner, and it keeps between visits.
+        </p>
+
+        <div style={{ flex:1, overflowY:"auto", minHeight:80 }}>
+          <GroceryList pantry={pantry} setPantry={setPantry} />
+          {count === 0 && (
+            <p style={{ fontSize:15, color:ZEN.faint, fontFamily:SANS, textAlign:"center", padding:"24px 0", fontStyle:"italic" }}>Nothing on the list yet.</p>
+          )}
+        </div>
+
+        <p style={{ fontSize:12, color:ZEN.faint, fontFamily:SANS, textAlign:"center", margin:0 }}>
+          {syncEnabled ? "☁️ Synced across your devices" : "💾 Saved on this device only"}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════
    SHOPPING LIST SCREEN
 ══════════════════════════════════════════════════════════ */
-function ShoppingListScreen({ recipe, onCook, onBack, servings, onAddToPantry, header, extras, onAddExtras, onRemoveExtra }) {
+function ShoppingListScreen({ recipe, onCook, onBack, servings, onAddToPantry, header, pantry, setPantry }) {
   const [checked, setChecked] = useState(new Set());
   const [showShare, setShowShare] = useState(false);
   const [stashed, setStashed] = useState(null);
-  const [draft, setDraft] = useState("");
   function toggle(i) { setChecked(s => { const n = new Set(s); n.has(i) ? n.delete(i) : n.add(i); return n; }); }
 
-  async function addExtras(e) {
-    e?.preventDefault();
-    if (!draft.trim()) return;
-    await onAddExtras(draft);
-    setDraft("");
-  }
   const total = recipe.shoppingList?.length || 0;
   const done = checked.size;
 
@@ -551,30 +650,15 @@ function ShoppingListScreen({ recipe, onCook, onBack, servings, onAddToPantry, h
             );
           })}
         </div>
-        {/* Your own running errands list — persists between recipes, since
-            "we're out of milk" has nothing to do with tonight's dinner. */}
+        {/* Your own errands list, the same one the header opens. Persists
+            between recipes, since "we're out of milk" has nothing to do with
+            tonight's dinner. */}
         <div style={{ marginTop:30, borderTop:"1px solid "+ZEN.border, paddingTop:22 }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:10 }}>
             <span style={{ fontSize:13, letterSpacing:"2px", color:ZEN.muted, textTransform:"uppercase" }}>Also need</span>
             <span style={{ fontSize:12, color:ZEN.faint, fontStyle:"italic" }}>your own list</span>
           </div>
-          <form onSubmit={addExtras} style={{ display:"flex", gap:8, marginBottom:extras.length?14:0 }}>
-            <input value={draft} onChange={e => setDraft(e.target.value)} maxLength={400}
-              placeholder="milk, paper towels, coffee…"
-              style={{ flex:1, padding:"12px 14px", border:"1.5px solid "+ZEN.border, borderRadius:10, background:"#fff", color:ZEN.text, fontFamily:SANS, fontSize:16, outline:"none" }} />
-            <button type="submit" disabled={!draft.trim()}
-              style={btn({ background:draft.trim()?"#3D6E52":ZEN.border, color:draft.trim()?"#fff":ZEN.muted, borderRadius:10, padding:"12px 20px", fontSize:16, cursor:draft.trim()?"pointer":"default" })}>Add</button>
-          </form>
-          {extras.map(item => (
-            <div key={item.name} style={{ display:"flex", alignItems:"center", gap:16, padding:"13px 0", borderBottom:"1px solid "+ZEN.surface }}>
-              <button onClick={() => onRemoveExtra(item.name)} aria-label={"Got " + item.name}
-                style={{ width:26, height:26, borderRadius:6, flexShrink:0, background:"#fff", border:"2px solid "+ZEN.border, cursor:"pointer", padding:0 }} />
-              <span style={{ flex:1, fontSize:18, color:ZEN.text }}>{item.name}</span>
-              <button onClick={() => onRemoveExtra(item.name)} aria-label={"Remove " + item.name}
-                style={{ background:"none", border:"none", color:ZEN.faint, fontSize:16, cursor:"pointer", padding:"0 4px" }}>✕</button>
-            </div>
-          ))}
-          {extras.length > 0 && <p style={{ fontSize:12, color:ZEN.faint, marginTop:10 }}>Tick or ✕ to clear an item once you've got it.</p>}
+          <GroceryList pantry={pantry} setPantry={setPantry} />
         </div>
 
         {/* Filing bought items into the pantry keeps it current without a separate chore. */}
@@ -684,7 +768,7 @@ function LoadingScreen({ results, error }) {
 /* ══════════════════════════════════════════════════════════
    WELCOME SCREEN
 ══════════════════════════════════════════════════════════ */
-function WelcomeScreen({ onStart, onQuickPick, onPantry, pantryCount, onFavorites, favoriteCount }) {
+function WelcomeScreen({ onStart, onQuickPick, onPantry, pantryCount, onGrocery, groceryCount, onFavorites, favoriteCount }) {
   return (
     <div style={{ minHeight:"100vh", background:ZEN.bg, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"40px 28px", gap:0 }}>
       <div style={{ animation:"gentleSpin 18s linear infinite", fontSize:88, marginBottom:28, lineHeight:1 }}>🍽️</div>
@@ -695,6 +779,9 @@ function WelcomeScreen({ onStart, onQuickPick, onPantry, pantryCount, onFavorite
       <div style={{ display:"flex", gap:6, animation:"fadeIn 1.3s ease" }}>
         <button onTouchStart={onPantry} onClick={onPantry} style={btn({ background:"none", color:ZEN.faint, borderRadius:50, padding:"8px 14px", fontSize:15, fontWeight:400 })}>
           🥫 My pantry{pantryCount ? " (" + pantryCount + ")" : ""}
+        </button>
+        <button onTouchStart={onGrocery} onClick={onGrocery} style={btn({ background:"none", color:ZEN.faint, borderRadius:50, padding:"8px 14px", fontSize:15, fontWeight:400 })}>
+          🛒 Grocery list{groceryCount ? " (" + groceryCount + ")" : ""}
         </button>
         <button onTouchStart={onFavorites} onClick={onFavorites} style={btn({ background:"none", color:ZEN.faint, borderRadius:50, padding:"8px 14px", fontSize:15, fontWeight:400 })}>
           ♥ Saved{favoriteCount ? " (" + favoriteCount + ")" : ""}
@@ -818,7 +905,7 @@ function DoneScreen({ recipe, saved, onToggleSave, onFinish, onLeftovers, header
 /* Slim persistent bar. Pantry and favourites open as overlays rather than
    screens so opening one never loses the recipe you're cooking. Deliberately
    not shown on the welcome or spin screens — those are focused sequences. */
-function AppHeader({ onHome, onPantry, pantryCount, onFavorites, favoriteCount, onIngredients }) {
+function AppHeader({ onHome, onPantry, pantryCount, onGrocery, groceryCount, onFavorites, favoriteCount, onIngredients }) {
   const icon = extra => btn({ background:"none", color:ZEN.muted, borderRadius:8, padding:"7px 10px", fontSize:14, fontWeight:400, whiteSpace:"nowrap", ...extra });
   return (
     <div style={{ position:"sticky", top:0, zIndex:40, background:ZEN.bg, borderBottom:"1px solid "+ZEN.border,
@@ -830,6 +917,7 @@ function AppHeader({ onHome, onPantry, pantryCount, onFavorites, favoriteCount, 
       <div style={{ display:"flex", alignItems:"center", gap:2 }}>
         {onIngredients && <button onClick={onIngredients} style={icon()}>✎ Ingredients</button>}
         <button onClick={onPantry} style={icon()}>🥫{pantryCount ? " " + pantryCount : ""}</button>
+        <button onClick={onGrocery} title="Grocery list" style={icon()}>🛒{groceryCount ? " " + groceryCount : ""}</button>
         <button onClick={onFavorites} style={icon()}>♥{favoriteCount ? " " + favoriteCount : ""}</button>
       </div>
     </div>
@@ -1023,6 +1111,7 @@ export default function App() {
   const [pantry, setPantry] = useState(EMPTY_PANTRY);
   const [history, setHistory] = useState(() => loadHistory());
   const [showPantry, setShowPantry] = useState(false);
+  const [showGrocery, setShowGrocery] = useState(false);
   const [showFavorites, setShowFavorites] = useState(false);
   const [confirmHome, setConfirmHome] = useState(false);
   const [favorites, setFavorites] = useState([]);
@@ -1125,6 +1214,7 @@ export default function App() {
   }
 
   const pantryCount = pantry.staples.length + pantry.useSoon.length;
+  const groceryCount = (pantry.shopping || []).length;
 
   // Only offer "Ingredients" once a spin has actually produced some.
   const hasIngredients = STEPS.every(s => results[s.key]);
@@ -1132,13 +1222,14 @@ export default function App() {
     <AppHeader
       onHome={requestHome}
       onPantry={() => setShowPantry(true)} pantryCount={pantryCount}
+      onGrocery={() => setShowGrocery(true)} groceryCount={groceryCount}
       onFavorites={() => setShowFavorites(true)} favoriteCount={favorites.length}
       onIngredients={hasIngredients && screen !== "summary" ? () => setScreen("summary") : null}
     />
   );
 
   let view = null;
-  if (screen === "welcome") view = <WelcomeScreen onStart={() => setScreen("spin")} onQuickPick={handleQuickPick} onPantry={() => setShowPantry(true)} pantryCount={pantryCount} onFavorites={() => setShowFavorites(true)} favoriteCount={favorites.length} />;
+  if (screen === "welcome") view = <WelcomeScreen onStart={() => setScreen("spin")} onQuickPick={handleQuickPick} onPantry={() => setShowPantry(true)} pantryCount={pantryCount} onGrocery={() => setShowGrocery(true)} groceryCount={groceryCount} onFavorites={() => setShowFavorites(true)} favoriteCount={favorites.length} />;
   else if (screen === "spin") view = <SpinScreen key={stepIdx} step={STEPS[stepIdx]} stepIdx={stepIdx} total={STEPS.length} onDone={handleStepDone} />;
   else if (screen === "loading") view = <LoadingScreen results={results} error={error} />;
   else if (screen === "summary") view = (
@@ -1152,9 +1243,7 @@ export default function App() {
   else if (screen === "shopping") view = (
     <ShoppingListScreen recipe={activeRecipe} onBack={() => setScreen(recipes ? "recipes" : "welcome")} onCook={() => setScreen("steps")}
       servings={lastServings} onAddToPantry={handleAddToPantry} header={header}
-      extras={pantry.shopping || []}
-      onAddExtras={text => handleAddToPantry(KINDS.SHOPPING, text)}
-      onRemoveExtra={async name => setPantry(await removeItems(KINDS.SHOPPING, name))} />
+      pantry={pantry} setPantry={setPantry} />
   );
   else if (screen === "steps") view = <RecipeStepsScreen recipe={activeRecipe} onBack={() => setScreen("shopping")} servings={lastServings} saved={isFavorite(favorites, activeRecipe)} onToggleSave={toggleSaveRecipe} header={header} onDone={() => setScreen("done")} />;
   else if (screen === "done") view = (
@@ -1177,6 +1266,7 @@ export default function App() {
           onClose={() => setConfirmHome(false)} />
       )}
       {showPantry && <PantryModal pantry={pantry} setPantry={setPantry} onClose={() => setShowPantry(false)} />}
+      {showGrocery && <GroceryModal pantry={pantry} setPantry={setPantry} onClose={() => setShowGrocery(false)} />}
       {showFavorites && (
         <FavoritesModal favorites={favorites} onClose={() => setShowFavorites(false)}
           onRemove={async r => setFavorites(await removeFavorite(r))}
