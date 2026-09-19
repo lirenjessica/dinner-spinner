@@ -11,7 +11,9 @@ generates 2 dinner recipes → shopping list → cooking steps → rate it at th
 - **Live:** https://gurtdinner.vercel.app
 - **Local folder:** `C:\Users\LirenTruong\dinner-spinner`
 - **GitHub:** https://github.com/lirenjessica/dinner-spinner (public)
-- **Vercel project:** `dinner-spinner-olfx` (owner `lirenjessica`, team `dinner-s-projects`)
+- **Vercel project:** `dinner-spinner` (owner `lirenjessica`, team `dinner-s-projects`).
+  Renamed from `dinner-spinner-olfx` on 19 Sep 2026, so preview URLs from before
+  that date no longer resolve.
 - **Supabase project ref:** `kjiapkmuwfnnooayvbwd`
 
 ## Architecture — read this before changing the AI call
