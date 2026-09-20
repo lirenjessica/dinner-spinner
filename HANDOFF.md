@@ -1,4 +1,4 @@
-# Dinner Spinner — handoff notes
+# Gurt Dinner — handoff notes
 
 Context for picking this project up in a fresh session.
 Last substantive work: late July 2026.
@@ -9,10 +9,10 @@ React + Vite app. Spin four wheels (protein / veggie / carb / cuisine) → Gemin
 generates 2 dinner recipes → shopping list → cooking steps → rate it at the end.
 
 - **Live:** https://gurtdinner.vercel.app
-- **Local folder:** `C:\Users\LirenTruong\dinner-spinner`
-- **GitHub:** https://github.com/lirenjessica/dinner-spinner (public)
-- **Vercel project:** `dinner-spinner` (owner `lirenjessica`, team `dinner-s-projects`).
-  Renamed from `dinner-spinner-olfx` on 19 Sep 2026, so preview URLs from before
+- **Local folder:** `C:\Users\LirenTruong\gurt-dinner`
+- **GitHub:** https://github.com/lirenjessica/gurt-dinner (public)
+- **Vercel project:** `gurt-dinner` (owner `lirenjessica`, team `dinner-s-projects`).
+  Renamed from `gurt-dinner-olfx` on 19 Sep 2026, so preview URLs from before
   that date no longer resolve.
 - **Supabase project ref:** `kjiapkmuwfnnooayvbwd`
 

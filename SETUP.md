@@ -1,4 +1,4 @@
-# Dinner Spinner — Setup
+# Gurt Dinner — Setup
 
 ## Running it locally
 
@@ -150,3 +150,24 @@ being used as a free general-purpose AI proxy.
 
 Local dev uses the same `api/_core.js` through a small plugin in `vite.config.js`,
 so local and production behave identically.
+
+---
+
+## A note on the name
+
+This project was called dinner-spinner until Sep 2026. The repo, folder,
+Vercel project and Supabase project are now gurt-dinner, gurt-dinner,
+gurt-dinner and gurt-apps.
+
+Four strings still say `dinner-spinner` on purpose, in `src/pantry.js`,
+`src/favorites.js`, `src/feedback.js` and `src/App.jsx`:
+
+```
+dinner-spinner-pantry      dinner-spinner-favorites
+dinner-spinner-history     dinner-spinner-prefs
+```
+
+Those are browser localStorage keys, not names. Renaming them would make
+every browser look under a new key, find nothing, and silently lose the
+locally saved pantry, favourites, history and preferences on every device
+that has them. They are invisible to users, so leave them as they are.

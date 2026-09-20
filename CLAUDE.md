@@ -1,4 +1,4 @@
-# Dinner Spinner
+# Gurt Dinner
 
 ## How to explain things to Liren
 
